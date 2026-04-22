@@ -1,0 +1,25 @@
+version: 1
+applications:
+  - frontend:
+      phases:
+        preBuild:
+          commands:
+            # Install pnpm
+            - npm install -g pnpm@9
+            # Install all workspace dependencies
+            - pnpm install --frozen-lockfile
+            # Generate Drizzle migration files (schema must be up to date)
+            - pnpm --filter @booking-agent/db db:generate
+        build:
+          commands:
+            - pnpm --filter @booking-agent/web build
+      artifacts:
+        baseDirectory: apps/web/.next
+        files:
+          - "**/*"
+      cache:
+        paths:
+          - node_modules/**/*
+          - apps/web/.next/cache/**/*
+          - ~/.pnpm-store/**/*
+    appRoot: .
