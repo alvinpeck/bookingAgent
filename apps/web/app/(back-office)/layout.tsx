@@ -9,8 +9,10 @@ const NAV_LINKS = [
   { href: "/services",      label: "Services" },
   { href: "/availability",  label: "Availability" },
   { href: "/staff",         label: "Staff" },
+  { href: "/channels",      label: "Channels" },
   { href: "/integrations",  label: "Integrations" },
-  { href: "/settings",      label: "Settings" },
+  { href: "/settings",          label: "Settings" },
+  { href: "/settings/api-keys", label: "API Keys" },
   { href: "/audit",         label: "Audit Log" },
 ];
 

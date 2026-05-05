@@ -8,4 +8,5 @@ export {
   protectedProcedure,
   requirePermission,
   withAudit,
+  createCallerFactory,
 } from "./trpc";

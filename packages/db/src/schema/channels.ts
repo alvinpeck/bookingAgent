@@ -55,6 +55,8 @@ export const channels = pgTable(
     whatsappVerifyToken: text("whatsapp_verify_token"),
     // Reference key to encrypted WHATSAPP_APP_SECRET in secret store
     whatsappAppSecretRef: text("whatsapp_app_secret_ref"),
+    // Reference key to encrypted WHATSAPP_ACCESS_TOKEN in secret store
+    whatsappAccessTokenRef: text("whatsapp_access_token_ref"),
 
     // ── Telegram fields ──
     telegramBotUsername: text("telegram_bot_username"),

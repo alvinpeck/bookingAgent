@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { db, tenants, tenantUsers } from "@booking-agent/db";
 import { eq, and } from "drizzle-orm";
+import SyncBanner from "./SyncBanner";
 
 export default async function DashboardPage() {
   const { userId, orgId } = await auth();
@@ -29,6 +30,11 @@ export default async function DashboardPage() {
           Welcome back{tenantUser?.firstName ? `, ${tenantUser.firstName}` : ""}.
         </p>
       </div>
+
+      {/* Show sync banner if tenant not yet in DB (webhook not configured locally) */}
+      {!tenant && (
+        <SyncBanner />
+      )}
 
       {/* Status cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">

@@ -90,6 +90,44 @@ export const servicesRouter = router({
     }),
 
   /**
+   * Public: get a single active service by tenant slug + service slug.
+   * Used by the booking site — no auth required.
+   */
+  getPublicBySlug: publicProcedure
+    .input(z.object({ tenantSlug: z.string(), serviceSlug: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { tenants } = await import("@booking-agent/db");
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.slug, input.tenantSlug),
+      });
+      if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const service = await ctx.db.query.services.findFirst({
+        where: and(
+          eq(services.tenantId, tenant.id),
+          eq(services.slug, input.serviceSlug),
+          eq(services.status, "active"),
+          eq(services.isPublic, true),
+          isNull(services.deletedAt)
+        ),
+        columns: {
+          id: true,
+          name: true,
+          description: true,
+          slug: true,
+          durationMinutes: true,
+          bufferAfterMinutes: true,
+          price: true,
+          currency: true,
+          colorHex: true,
+        },
+      });
+
+      if (!service) throw new TRPCError({ code: "NOT_FOUND" });
+      return { service, tenantSlug: tenant.slug, tenantName: tenant.name, tenantTimezone: tenant.timezone };
+    }),
+
+  /**
    * Get a single service by ID (must belong to current tenant).
    */
   getById: protectedProcedure
@@ -258,6 +296,52 @@ export const servicesRouter = router({
         resourceId: input.id,
       });
 
+      return { success: true };
+    }),
+
+  /**
+   * Get staff assigned to a service.
+   */
+  getStaff: protectedProcedure
+    .input(z.object({ serviceId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db.query.serviceStaff.findMany({
+        where: and(
+          eq(serviceStaff.tenantId, ctx.tenant.id),
+          eq(serviceStaff.serviceId, input.serviceId)
+        ),
+        with: {
+          staff: { columns: { id: true, displayName: true, isActive: true } },
+        },
+      });
+      return rows.map((r) => r.staff).filter((s) => s.isActive);
+    }),
+
+  /**
+   * Set the staff assigned to a service (replaces existing assignments).
+   */
+  setStaff: manageServicesProcedure
+    .input(z.object({ serviceId: z.string().uuid(), staffIds: z.array(z.string().uuid()) }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .delete(serviceStaff)
+          .where(
+            and(
+              eq(serviceStaff.tenantId, ctx.tenant.id),
+              eq(serviceStaff.serviceId, input.serviceId)
+            )
+          );
+        if (input.staffIds.length > 0) {
+          await tx.insert(serviceStaff).values(
+            input.staffIds.map((staffId) => ({
+              tenantId: ctx.tenant.id,
+              serviceId: input.serviceId,
+              staffId,
+            }))
+          );
+        }
+      });
       return { success: true };
     }),
 });

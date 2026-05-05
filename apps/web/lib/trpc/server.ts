@@ -1,7 +1,6 @@
 import "server-only";
 
-import { createTRPCContext, appRouter } from "@booking-agent/trpc";
-import { createCallerFactory } from "@trpc/server";
+import { createTRPCContext, appRouter, createCallerFactory } from "@booking-agent/trpc";
 import { cache } from "react";
 
 /**
@@ -22,7 +21,8 @@ const createContext = cache(async () => {
     headers: new Headers(),
   });
 
-  return createTRPCContext({ req, resHeaders: new Headers() });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return createTRPCContext({ req, resHeaders: new Headers() } as any);
 });
 
 const createCaller = createCallerFactory(appRouter);

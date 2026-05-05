@@ -138,6 +138,11 @@ export const bookingsRouter = router({
         after: booking,
       });
 
+      // Write to Google Calendar (best-effort, non-blocking)
+      writeBookingToCalendar(ctx.db, booking, ctx.tenant.timezone ?? "UTC").catch(
+        (err) => console.error("[gcal] write-back failed:", err)
+      );
+
       return booking;
     }),
 
@@ -194,6 +199,11 @@ export const bookingsRouter = router({
         channel: input.channel,
         holdToken: input.holdToken,
       });
+
+      // Write to Google Calendar (best-effort, non-blocking)
+      writeBookingToCalendar(ctx.db, booking, tenant.timezone ?? "UTC").catch(
+        (err) => console.error("[gcal] write-back failed:", err)
+      );
 
       return booking;
     }),
@@ -252,6 +262,11 @@ export const bookingsRouter = router({
         after: { status: "cancelled" },
         metadata: { reason: input.reason },
       });
+
+      // Remove Google Calendar event (best-effort)
+      deleteBookingFromCalendar(ctx.db, existing).catch(
+        (err) => console.error("[gcal] delete event failed:", err)
+      );
 
       return { success: true };
     }),
@@ -440,7 +455,7 @@ async function createBookingTransaction({
         eq(bookings.staffId, input.staffId),
         inArray(bookings.status, ["confirmed", "pending"]),
         sql`tstzrange(${bookings.startsAt}, ${bookings.endsAt}) &&
-            tstzrange(${new Date(input.startsAt)}, ${new Date(input.endsAt)})`
+            tstzrange(${input.startsAt}::timestamptz, ${input.endsAt}::timestamptz)`
       ),
     });
 
@@ -489,4 +504,95 @@ async function createBookingTransaction({
 
     return booking!;
   });
+}
+
+// ─── Google Calendar write-back helpers ───────────────────────────────────────
+
+async function writeBookingToCalendar(
+  db: import("@booking-agent/db").DB,
+  booking: typeof bookings.$inferSelect,
+  tenantTimezone: string
+): Promise<void> {
+  const { integrations: integrationsTable, services, staff } =
+    await import("@booking-agent/db");
+  const { eq, and } = await import("drizzle-orm");
+
+  const integration = await db.query.integrations.findFirst({
+    where: and(
+      eq(integrationsTable.staffId, booking.staffId),
+      eq(integrationsTable.type, "google_calendar"),
+      eq(integrationsTable.status, "active")
+    ),
+    columns: {
+      id: true,
+      googleCalendarId: true,
+      writeBackEnabled: true,
+    },
+  });
+  if (!integration?.writeBackEnabled) return;
+
+  const [service, staffRecord] = await Promise.all([
+    db.query.services.findFirst({
+      where: eq(services.id, booking.serviceId),
+      columns: { name: true },
+    }),
+    db.query.staff.findFirst({
+      where: eq(staff.id, booking.staffId),
+      columns: { displayName: true },
+    }),
+  ]);
+
+  const { getAccessToken, createCalendarEvent, buildBookingEvent } =
+    await import("../lib/google-calendar");
+
+  const accessToken = await getAccessToken(integration.id, db);
+  const eventId = await createCalendarEvent(
+    accessToken,
+    integration.googleCalendarId ?? "primary",
+    buildBookingEvent({
+      serviceName: service?.name ?? "Appointment",
+      staffDisplayName: staffRecord?.displayName ?? "Staff",
+      customerName: booking.customerName,
+      customerEmail: booking.customerEmail,
+      startsAt: booking.startsAt,
+      endsAt: booking.endsAt,
+      timezone: tenantTimezone,
+      bookingId: booking.id,
+      notes: booking.customerNotes,
+    })
+  );
+
+  // Persist the event ID so we can delete it on cancellation
+  await db
+    .update(bookings)
+    .set({ googleCalendarEventId: eventId, updatedAt: new Date() } as any)
+    .where(eq(bookings.id, booking.id));
+}
+
+export async function deleteBookingFromCalendar(
+  db: import("@booking-agent/db").DB,
+  booking: typeof bookings.$inferSelect
+): Promise<void> {
+  if (!booking.googleCalendarEventId) return;
+
+  const { integrations: integrationsTable } = await import("@booking-agent/db");
+  const { eq, and } = await import("drizzle-orm");
+
+  const integration = await db.query.integrations.findFirst({
+    where: and(
+      eq(integrationsTable.staffId, booking.staffId),
+      eq(integrationsTable.type, "google_calendar"),
+      eq(integrationsTable.status, "active")
+    ),
+    columns: { id: true, googleCalendarId: true },
+  });
+  if (!integration) return;
+
+  const { getAccessToken, deleteCalendarEvent } = await import("../lib/google-calendar");
+  const accessToken = await getAccessToken(integration.id, db);
+  await deleteCalendarEvent(
+    accessToken,
+    integration.googleCalendarId ?? "primary",
+    booking.googleCalendarEventId
+  );
 }

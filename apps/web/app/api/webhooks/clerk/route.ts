@@ -65,8 +65,6 @@ export async function POST(req: Request) {
             clerkOrgId: org.id,
             name: org.name,
             slug: org.slug ?? org.id,
-            plan: "starter",
-            status: "active",
           })
           .onConflictDoNothing();
         break;

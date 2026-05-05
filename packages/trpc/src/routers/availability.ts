@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, gte, lte, gt } from "drizzle-orm";
+import { eq, and, gte, lte, lt, gt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   router,
@@ -11,9 +11,59 @@ import {
   availabilityRules,
   availabilityOverrides,
   slotHolds,
+  bookings,
+  services,
+  tenants,
   dayOfWeekEnum,
   HOLD_DURATION_SECONDS,
 } from "@booking-agent/db";
+
+// ─── Slot Engine Helpers ──────────────────────────────────────────────────────
+
+const DAY_NAMES = [
+  "sunday", "monday", "tuesday", "wednesday",
+  "thursday", "friday", "saturday",
+] as const;
+
+/**
+ * Convert a naive local date+time string to a UTC Date, respecting the
+ * given IANA timezone. Works by measuring the UTC offset at that instant
+ * using Intl.DateTimeFormat (no external dependencies required).
+ */
+function localToUTC(dateStr: string, timeStr: string, tz: string): Date {
+  // Treat the target date+time as if it were UTC first
+  const asUTC = new Date(`${dateStr}T${timeStr}:00Z`);
+  // Format that UTC instant in the target timezone (sv-SE gives ISO-like output)
+  const formatted = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).format(asUTC);
+  // Parse the formatted local time back as if it were UTC to get the local instant
+  const asLocal = new Date(formatted.replace(" ", "T") + "Z");
+  // The offset tells us how far asUTC is from the true local time
+  const offsetMs = asUTC.getTime() - asLocal.getTime();
+  return new Date(asUTC.getTime() + offsetMs);
+}
+
+/** Get the tenant's timezone-local date string (YYYY-MM-DD) for a given UTC instant. */
+function utcToLocalDate(utc: Date, tz: string): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(utc).slice(0, 10);
+}
+
+/** Enumerate dates from fromDate to toDate inclusive (YYYY-MM-DD strings). */
+function dateRange(from: string, to: string): string[] {
+  const dates: string[] = [];
+  const cur = new Date(`${from}T00:00:00Z`);
+  const end = new Date(`${to}T00:00:00Z`);
+  while (cur <= end) {
+    dates.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return dates;
+}
 
 export const availabilityRouter = router({
   /**
@@ -268,5 +318,191 @@ export const availabilityRouter = router({
         expiresAt: expiresAt.toISOString(),
         holdDurationSeconds: HOLD_DURATION_SECONDS,
       };
+    }),
+
+  /**
+   * Phase 5 — Slot Engine.
+   *
+   * Returns available booking slots for a given staff member + service
+   * over a date range (max 60 days). Accounts for:
+   *   - Weekly availability rules (stored in tenant's local timezone)
+   *   - One-off date overrides (blocked days or custom hours)
+   *   - Existing confirmed/pending bookings
+   *   - Active slot holds (not yet expired)
+   */
+  getSlots: publicProcedure
+    .input(
+      z.object({
+        tenantSlug: z.string(),
+        staffId: z.string().uuid(),
+        serviceId: z.string().uuid(),
+        from: z.string().date(),
+        to: z.string().date(),
+      }).refine(({ from, to }) => {
+        const days = (new Date(`${to}T00:00:00Z`).getTime() -
+          new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000;
+        return days >= 0 && days <= 60;
+      }, { message: "Date range must be between 1 and 60 days" })
+    )
+    .query(async ({ ctx, input }) => {
+      // ── 1. Resolve tenant ────────────────────────────────────────────────────
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.slug, input.tenantSlug),
+      });
+      if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+
+      // ── 2. Resolve service ───────────────────────────────────────────────────
+      const service = await ctx.db.query.services.findFirst({
+        where: and(eq(services.id, input.serviceId), eq(services.tenantId, tenant.id)),
+      });
+      if (!service) throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
+
+      const slotMinutes = service.durationMinutes + service.bufferAfterMinutes;
+      const tz = tenant.timezone ?? "UTC";
+
+      // ── 3. Fetch availability rules for this staff member ────────────────────
+      const rules = await ctx.db.query.availabilityRules.findMany({
+        where: and(
+          eq(availabilityRules.tenantId, tenant.id),
+          eq(availabilityRules.staffId, input.staffId),
+          eq(availabilityRules.isActive, true)
+        ),
+      });
+      const ruleByDay = Object.fromEntries(rules.map((r) => [r.dayOfWeek, r]));
+
+      // ── 4. Fetch overrides in range ──────────────────────────────────────────
+      const overrides = await ctx.db.query.availabilityOverrides.findMany({
+        where: and(
+          eq(availabilityOverrides.tenantId, tenant.id),
+          eq(availabilityOverrides.staffId, input.staffId),
+          gte(availabilityOverrides.overrideDate, input.from),
+          lte(availabilityOverrides.overrideDate, input.to)
+        ),
+      });
+      const overrideByDate = Object.fromEntries(
+        overrides.map((o) => [o.overrideDate, o])
+      );
+
+      // ── 5. Fetch existing bookings in range ──────────────────────────────────
+      const windowStart = localToUTC(input.from, "00:00", tz);
+      const windowEnd = localToUTC(input.to, "23:59", tz);
+      windowEnd.setMinutes(windowEnd.getMinutes() + 1);
+
+      const existingBookings = await ctx.db.query.bookings.findMany({
+        where: and(
+          eq(bookings.tenantId, tenant.id),
+          eq(bookings.staffId, input.staffId),
+          gte(bookings.startsAt, windowStart),
+          lt(bookings.startsAt, windowEnd),
+        ),
+        columns: { startsAt: true, endsAt: true, status: true },
+      });
+      const activeBookings = existingBookings.filter(
+        (b) => b.status !== "cancelled" && b.status !== "rescheduled"
+      );
+
+      // ── 6. Fetch active slot holds in range ──────────────────────────────────
+      const now = new Date();
+      const activeHolds = await ctx.db.query.slotHolds.findMany({
+        where: and(
+          eq(slotHolds.tenantId, tenant.id),
+          eq(slotHolds.staffId, input.staffId),
+          gte(slotHolds.slotStartAt, windowStart),
+          lt(slotHolds.slotStartAt, windowEnd),
+          gt(slotHolds.expiresAt, now)
+        ),
+        columns: { slotStartAt: true, slotEndAt: true },
+      });
+
+      // ── 6b. Fetch Google Calendar free/busy for this staff member ────────────
+      let gcalBusy: { start: Date; end: Date }[] = [];
+      try {
+        const { integrations: integrationsTable } = await import("@booking-agent/db");
+        const integration = await ctx.db.query.integrations.findFirst({
+          where: and(
+            eq(integrationsTable.staffId, input.staffId),
+            eq(integrationsTable.type, "google_calendar"),
+            eq(integrationsTable.status, "active")
+          ),
+          columns: { id: true, googleCalendarId: true },
+        });
+        if (integration) {
+          const { getAccessToken, getFreeBusy } = await import("../lib/google-calendar");
+          const accessToken = await getAccessToken(integration.id, ctx.db);
+          gcalBusy = await getFreeBusy(
+            accessToken,
+            integration.googleCalendarId ?? "primary",
+            windowStart,
+            windowEnd
+          );
+        }
+      } catch {
+        // Never break slot generation due to calendar errors
+      }
+
+      // ── 7. Overlap detection ─────────────────────────────────────────────────
+      type Interval = { start: Date; end: Date };
+      const blocked: Interval[] = [
+        ...activeBookings.map((b) => ({ start: b.startsAt, end: b.endsAt })),
+        ...activeHolds.map((h) => ({ start: h.slotStartAt, end: h.slotEndAt })),
+        ...gcalBusy,
+      ];
+
+      function overlaps(slotStart: Date, slotEnd: Date): boolean {
+        return blocked.some((b) => slotStart < b.end && slotEnd > b.start);
+      }
+
+      // ── 8. Generate slots per date ───────────────────────────────────────────
+      const slots: { startsAt: string; endsAt: string }[] = [];
+
+      for (const dateStr of dateRange(input.from, input.to)) {
+        const override = overrideByDate[dateStr];
+
+        if (override?.isBlocked) continue;
+
+        let startTime: string | null = null;
+        let endTime: string | null = null;
+
+        if (override && !override.isBlocked && override.startTime && override.endTime) {
+          startTime = override.startTime.slice(0, 5);
+          endTime = override.endTime.slice(0, 5);
+        } else {
+          const jsDay = new Date(`${dateStr}T12:00:00Z`).getUTCDay();
+          const dayName = DAY_NAMES[jsDay];
+          const rule = ruleByDay[dayName];
+          if (!rule) continue;
+          startTime = rule.startTime.slice(0, 5);
+          endTime = rule.endTime.slice(0, 5);
+        }
+
+        const dayStart = localToUTC(dateStr, startTime, tz);
+        const dayEnd = localToUTC(dateStr, endTime, tz);
+
+        let cursor = new Date(dayStart);
+        while (cursor.getTime() + slotMinutes * 60_000 <= dayEnd.getTime()) {
+          const slotStart = new Date(cursor);
+          const slotEnd = new Date(cursor.getTime() + slotMinutes * 60_000);
+          const appointmentEnd = new Date(
+            cursor.getTime() + service.durationMinutes * 60_000
+          );
+
+          // Skip slots in the past (1 min grace)
+          if (slotStart.getTime() < now.getTime() - 60_000) {
+            cursor = slotEnd;
+            continue;
+          }
+
+          if (!overlaps(slotStart, slotEnd)) {
+            slots.push({
+              startsAt: slotStart.toISOString(),
+              endsAt: appointmentEnd.toISOString(),
+            });
+          }
+
+          cursor = slotEnd;
+        }
+      }
+
+      return { slots, timezone: tz };
     }),
 });

@@ -3,13 +3,95 @@ import { eq, and } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   router,
+  publicProcedure,
   protectedProcedure,
   manageStaffProcedure,
   withAudit,
 } from "../trpc";
-import { tenantUsers, staff, userRoleEnum } from "@booking-agent/db";
+import { tenantUsers, staff, serviceStaff, services, tenants, availabilityRules, userRoleEnum } from "@booking-agent/db";
+
+const DEFAULT_RULES = [
+  { dayOfWeek: "monday",    startTime: "09:00", endTime: "17:00" },
+  { dayOfWeek: "tuesday",   startTime: "09:00", endTime: "17:00" },
+  { dayOfWeek: "wednesday", startTime: "09:00", endTime: "17:00" },
+  { dayOfWeek: "thursday",  startTime: "09:00", endTime: "17:00" },
+  { dayOfWeek: "friday",    startTime: "09:00", endTime: "17:00" },
+] as const;
 
 export const staffRouter = router({
+  /**
+   * Public: list active staff assigned to a specific service.
+   * Used by the booking site — no auth required.
+   */
+  listPublicForService: publicProcedure
+    .input(z.object({ tenantSlug: z.string(), serviceSlug: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.slug, input.tenantSlug),
+      });
+      if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const service = await ctx.db.query.services.findFirst({
+        where: and(eq(services.tenantId, tenant.id), eq(services.slug, input.serviceSlug)),
+      });
+      if (!service) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const assignments = await ctx.db.query.serviceStaff.findMany({
+        where: and(
+          eq(serviceStaff.tenantId, tenant.id),
+          eq(serviceStaff.serviceId, service.id)
+        ),
+        with: {
+          staff: {
+            columns: { id: true, displayName: true, bio: true, avatarUrl: true, isActive: true },
+          },
+        },
+      });
+
+      return assignments
+        .map((a) => a.staff)
+        .filter((s) => s.isActive);
+    }),
+
+  /**
+   * Create a staff record for an existing tenant user.
+   */
+  create: manageStaffProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        tenantUserId: z.string().uuid(),
+        displayName: z.string().min(1).max(100),
+        bio: z.string().max(500).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await ctx.db.query.tenantUsers.findFirst({
+        where: and(eq(tenantUsers.id, input.tenantUserId), eq(tenantUsers.tenantId, ctx.tenant.id)),
+      });
+      if (!user) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const existing = await ctx.db.query.staff.findFirst({
+        where: and(eq(staff.tenantUserId, user.id), eq(staff.tenantId, ctx.tenant.id)),
+      });
+      if (existing) throw new TRPCError({ code: "CONFLICT", message: "This user is already a staff member." });
+
+      const [created] = await ctx.db.transaction(async (tx) => {
+        const [s] = await tx
+          .insert(staff)
+          .values({ tenantId: ctx.tenant.id, tenantUserId: user.id, displayName: input.displayName, bio: input.bio ?? null })
+          .returning();
+        // Seed default Mon–Fri 9–5 availability rules
+        await tx.insert(availabilityRules).values(
+          DEFAULT_RULES.map((r) => ({ tenantId: ctx.tenant.id, staffId: s!.id, ...r, isActive: true }))
+        );
+        return [s];
+      });
+
+      await ctx.audit("user.invited", { resourceType: "staff", resourceId: created!.id, after: created });
+      return created;
+    }),
+
   /**
    * List all staff members for the current tenant.
    */
