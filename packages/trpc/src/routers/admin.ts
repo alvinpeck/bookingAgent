@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { eq, and, desc, sql, max, isNull } from "drizzle-orm";
+import { clerkClient } from "@clerk/nextjs/server";
 import {
   tenants,
   tenantSettings,
@@ -316,6 +317,93 @@ export const adminRouter = router({
       }
 
       return updated;
+    }),
+
+  /**
+   * Create a new client workspace (Clerk org + tenant DB row) and optionally
+   * send an invitation email to the client.
+   */
+  createWorkspace: superAdminProcedure
+    .input(
+      z.object({
+        businessName: z.string().min(1).max(100),
+        slug:         z.string().min(1).max(48).regex(/^[a-z0-9-]+$/, "Slug may only contain lowercase letters, numbers and hyphens"),
+        plan:         z.enum(["starter", "growth", "enterprise"]).default("starter"),
+        inviteEmail:  z.string().email().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const clerkSecret = process.env.CLERK_SECRET_KEY;
+      if (!clerkSecret) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "CLERK_SECRET_KEY not set." });
+
+      // 1 — Create Clerk organization via Backend API
+      const orgRes = await fetch("https://api.clerk.com/v1/organizations", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${clerkSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: input.businessName, slug: input.slug }),
+      });
+
+      if (!orgRes.ok) {
+        const body = await orgRes.json().catch(() => ({})) as { errors?: { message: string }[] };
+        const msg = body.errors?.[0]?.message ?? `Clerk API error ${orgRes.status}`;
+        throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+      }
+
+      const org = await orgRes.json() as { id: string; name: string; slug: string };
+
+      // 2 — Upsert tenant row in our DB
+      const { tenantSettings: _ts, ...tenantCols } = await import("@booking-agent/db").then(m => m);
+      const [tenant] = await ctx.db
+        .insert(tenants)
+        .values({
+          clerkOrgId: org.id,
+          name:       org.name,
+          slug:       org.slug ?? input.slug,
+          plan:       input.plan,
+          status:     "active",
+        } as any)
+        .onConflictDoUpdate({
+          target: tenants.clerkOrgId,
+          set:    { name: org.name, updatedAt: new Date() } as any,
+        })
+        .returning();
+
+      if (!tenant) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create tenant." });
+
+      // 3 — Optionally invite the client by email
+      if (input.inviteEmail) {
+        const inviteRes = await fetch(
+          `https://api.clerk.com/v1/organizations/${org.id}/invitations`,
+          {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${clerkSecret}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email_address: input.inviteEmail,
+              role:          "org:admin",
+              redirect_url:  `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+            }),
+          }
+        );
+        // Non-fatal — workspace is created even if invite fails
+        if (!inviteRes.ok) {
+          const body = await inviteRes.json().catch(() => ({})) as { errors?: { message: string }[] };
+          console.warn("[admin] invite failed:", body.errors?.[0]?.message);
+        }
+      }
+
+      return {
+        tenantId:    tenant.id,
+        name:        tenant.name,
+        slug:        tenant.slug,
+        clerkOrgId:  org.id,
+        inviteSent:  !!input.inviteEmail,
+      };
     }),
 
   /**

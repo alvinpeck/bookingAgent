@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
@@ -32,21 +34,152 @@ function fmtDate(d: Date | string) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
+  const router = useRouter();
+  const utils  = trpc.useUtils();
   const { data: tenants, isLoading } = trpc.admin.listTenants.useQuery();
 
   const totalTenants  = tenants?.length ?? 0;
   const activeTenants = tenants?.filter((t) => t.status === "active").length ?? 0;
   const totalBookings = tenants?.reduce((sum, t) => sum + (t.bookingCount ?? 0), 0) ?? 0;
 
+  // Create Workspace modal state
+  const [showModal, setShowModal]       = useState(false);
+  const [bizName, setBizName]           = useState("");
+  const [slug, setSlug]                 = useState("");
+  const [plan, setPlan]                 = useState<"starter" | "growth" | "enterprise">("starter");
+  const [inviteEmail, setInviteEmail]   = useState("");
+  const [modalError, setModalError]     = useState<string | null>(null);
+
+  function handleNameChange(name: string) {
+    setBizName(name);
+    setSlug(
+      name.toLowerCase().trim()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .slice(0, 48)
+    );
+  }
+
+  const createWorkspace = trpc.admin.createWorkspace.useMutation({
+    onSuccess: (data) => {
+      utils.admin.listTenants.invalidate();
+      setShowModal(false);
+      setBizName(""); setSlug(""); setInviteEmail(""); setModalError(null);
+      router.push(`/admin/tenants/${data.tenantId}`);
+    },
+    onError: (err) => setModalError(err.message),
+  });
+
   return (
     <div>
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-white">Super Admin Dashboard</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Platform-wide overview across all tenants.
-        </p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Super Admin Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Platform-wide overview across all tenants.
+          </p>
+        </div>
+        <button
+          onClick={() => { setShowModal(true); setModalError(null); }}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          + Create Workspace
+        </button>
       </div>
+
+      {/* Create Workspace Modal */}
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md mx-4 p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold text-white mb-1">Create Client Workspace</h2>
+            <p className="text-sm text-slate-400 mb-5">
+              Creates a new workspace and optionally sends an invite email to the client.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Business Name</label>
+                <input
+                  type="text"
+                  value={bizName}
+                  onChange={(e) => handleNameChange(e.target.value)}
+                  placeholder="e.g. Sunshine Clinic"
+                  className="w-full bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Slug (URL identifier)</label>
+                <input
+                  type="text"
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                  placeholder="sunshine-clinic"
+                  className="w-full bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500"
+                />
+                <p className="text-xs text-slate-500 mt-1">Used in booking URL: /book/{slug || "..."}</p>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Plan</label>
+                <select
+                  value={plan}
+                  onChange={(e) => setPlan(e.target.value as typeof plan)}
+                  className="w-full bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="starter">Starter</option>
+                  <option value="growth">Growth</option>
+                  <option value="enterprise">Enterprise</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">
+                  Client Email <span className="text-slate-600">(optional — sends invite)</span>
+                </label>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="client@example.com"
+                  className="w-full bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500"
+                />
+              </div>
+
+              {modalError && (
+                <p className="text-xs text-red-400 bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">
+                  {modalError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  createWorkspace.mutate({
+                    businessName: bizName,
+                    slug,
+                    plan,
+                    ...(inviteEmail ? { inviteEmail } : {}),
+                  });
+                }}
+                disabled={createWorkspace.isPending || !bizName || !slug}
+                className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:text-indigo-400 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {createWorkspace.isPending ? "Creating…" : inviteEmail ? "Create & Send Invite" : "Create Workspace"}
+              </button>
+              <button
+                onClick={() => { setShowModal(false); setModalError(null); }}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
