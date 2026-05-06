@@ -17,6 +17,8 @@ import {
   getConversationHistory,
   appendConversationHistory,
 } from "./redis";
+import { checkQuota, incrementUsage } from "./usage";
+import { logger } from "./logger";
 
 export interface AgentOpts {
   tenantId: string;
@@ -112,10 +114,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
     try {
       apiKey = decrypt(anthropicRow.value as string);
     } catch {
-      console.error(
-        "[agent] Failed to decrypt Anthropic API key for tenant",
-        tenantId
-      );
+      logger.error("[agent] Failed to decrypt Anthropic API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
     model = createAnthropic({
@@ -143,10 +142,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
     try {
       apiKey = decrypt(openaiRow.value as string);
     } catch {
-      console.error(
-        "[agent] Failed to decrypt OpenAI API key for tenant",
-        tenantId
-      );
+      logger.error("[agent] Failed to decrypt OpenAI API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
     model = createOpenAI({ apiKey })("gpt-4o-mini");
@@ -154,14 +150,20 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
     return "This booking service is not yet configured. Please contact the business directly.";
   }
 
-  // 2. Load conversation history
+  // 2. Check AI token quota before doing any work
+  const quota = await checkQuota(db, tenantId, "ai_tokens");
+  if (!quota.allowed) {
+    return "I'm sorry, this service has reached its monthly AI usage limit. Please try again next month or contact the business directly.";
+  }
+
+  // 3. Load conversation history
   const history = await getConversationHistory(
     tenantId,
     channelId,
     externalUserId
   );
 
-  // 3. Define tools
+  // 4. Define tools
   const agentTools = {
     listServices: tool({
       description: "List all active services available for booking.",
@@ -538,7 +540,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
     }),
   };
 
-  // 4. Call generateText
+  // 5. Call generateText
   let replyText: string;
   try {
     const result = await generateText({
@@ -552,13 +554,27 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
     replyText =
       result.text ||
       "I'm sorry, I couldn't generate a response. Please try again.";
+
+    // 6. Track usage — fire-and-forget (don't fail the response on metering errors)
+    const totalTokens = result.usage?.totalTokens ?? 1;
+    void incrementUsage(db, tenantId, "ai_tokens", totalTokens).catch((err) =>
+      logger.error("[agent] Failed to meter ai_tokens", { tenantId, err: String(err) })
+    );
+    void incrementUsage(
+      db,
+      tenantId,
+      platform === "telegram" ? "telegram_messages" : "whatsapp_messages",
+      1
+    ).catch((err) =>
+      logger.error("[agent] Failed to meter message count", { tenantId, platform, err: String(err) })
+    );
   } catch (err) {
-    console.error("[agent] generateText error:", err);
+    logger.error("[agent] generateText error", { tenantId, channelId, err: String(err) });
     replyText =
       "Sorry, I'm having trouble right now. Please try again in a moment.";
   }
 
-  // 5. Append to history
+  // 7. Append to history
   await appendConversationHistory(
     tenantId,
     channelId,

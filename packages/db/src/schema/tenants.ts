@@ -6,6 +6,7 @@ import {
   boolean,
   jsonb,
   uuid,
+  integer,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -141,3 +142,46 @@ export const PLAN_QUOTAS = {
 
 export type TenantPlan = typeof tenantPlanEnum.enumValues[number];
 export type TenantStatus = typeof tenantStatusEnum.enumValues[number];
+
+// ─── Usage Metering ───────────────────────────────────────────────────────────
+
+export const usageMetricEnum = pgEnum("usage_metric", [
+  "bookings",
+  "ai_tokens",
+  "whatsapp_messages",
+  "telegram_messages",
+  "email_reminders",
+  "sms_reminders",
+  "staff_seats",
+]);
+
+export type UsageMetric = typeof usageMetricEnum.enumValues[number];
+
+/**
+ * Monthly usage counters per tenant, metric, and billing period.
+ * The table already exists in the DB — Drizzle schema added in Phase 11.
+ * period_month format: "YYYY-MM"
+ */
+export const usageMetering = pgTable(
+  "usage_metering",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    metric: usageMetricEnum("metric").notNull(),
+    periodMonth: text("period_month").notNull(), // "YYYY-MM"
+    count: integer("count").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (t) => [
+    uniqueIndex("usage_metering_tenant_period_metric_idx").on(
+      t.tenantId,
+      t.periodMonth,
+      t.metric
+    ),
+    index("usage_metering_tenant_idx").on(t.tenantId),
+  ]
+);

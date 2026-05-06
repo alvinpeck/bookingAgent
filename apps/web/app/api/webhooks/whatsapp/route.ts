@@ -10,6 +10,7 @@ import {
 import { checkRateLimit, isOnCooldown } from "@booking-agent/trpc/lib/redis";
 import { sendWhatsAppMessage } from "@booking-agent/trpc/lib/whatsapp-send";
 import { runBookingAgent } from "@booking-agent/trpc/lib/agent";
+import { logger } from "@booking-agent/trpc/lib/logger";
 
 /**
  * WhatsApp Cloud API webhook.
@@ -96,7 +97,7 @@ export async function POST(req: Request) {
     try {
       appSecret = decrypt(channel.whatsappAppSecretRef);
     } catch {
-      console.error("[whatsapp-webhook] Failed to decrypt app secret for channel", channel.id);
+      logger.error("[whatsapp-webhook] Failed to decrypt app secret", { channelId: channel.id });
       continue;
     }
 
@@ -114,7 +115,7 @@ export async function POST(req: Request) {
     }
 
     if (!sigValid) {
-      console.warn("[whatsapp-webhook] Signature mismatch for channel", channel.id);
+      logger.warn("[whatsapp-webhook] Signature mismatch", { channelId: channel.id });
       // Record failed verification
       await db
         .update(channels)
@@ -176,7 +177,7 @@ export async function POST(req: Request) {
         try {
           accessToken = decrypt(channel.whatsappAccessTokenRef);
         } catch {
-          console.error("[whatsapp-webhook] Failed to decrypt access token for channel", channel.id);
+          logger.error("[whatsapp-webhook] Failed to decrypt access token", { channelId: channel.id });
           continue;
         }
 
@@ -210,7 +211,7 @@ export async function POST(req: Request) {
             );
           }
         } catch (err) {
-          console.error("[whatsapp-webhook] Agent error:", err);
+          logger.error("[whatsapp-webhook] Agent error", { channelId: channel.id, err: String(err) });
           try {
             await sendWhatsAppMessage(
               accessToken!,

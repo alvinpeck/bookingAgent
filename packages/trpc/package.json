@@ -10,7 +10,12 @@
     "./lib/redis": "./src/lib/redis.ts",
     "./lib/telegram-send": "./src/lib/telegram-send.ts",
     "./lib/agent": "./src/lib/agent.ts",
-    "./lib/whatsapp-send": "./src/lib/whatsapp-send.ts"
+    "./lib/whatsapp-send": "./src/lib/whatsapp-send.ts",
+    "./lib/logger": "./src/lib/logger.ts",
+    "./lib/usage": {
+      "types": "./src/lib/usage.ts",
+      "default": "./src/lib/usage.ts"
+    }
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.74",

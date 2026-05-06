@@ -13,6 +13,7 @@ import {
 } from "@booking-agent/trpc/lib/redis";
 import { sendTelegramMessage } from "@booking-agent/trpc/lib/telegram-send";
 import { runBookingAgent } from "@booking-agent/trpc/lib/agent";
+import { logger } from "@booking-agent/trpc/lib/logger";
 
 /**
  * Telegram Bot webhook.
@@ -59,7 +60,7 @@ export async function POST(
   try {
     storedSecret = decrypt(channel.telegramWebhookSecretRef);
   } catch {
-    console.error("[telegram-webhook] Failed to decrypt webhook secret for channel", channelId);
+    logger.error("[telegram-webhook] Failed to decrypt webhook secret", { channelId });
     return new NextResponse("Internal error", { status: 500 });
   }
 
@@ -74,7 +75,7 @@ export async function POST(
   }
 
   if (!secretValid) {
-    console.warn("[telegram-webhook] Secret token mismatch for channel", channelId);
+    logger.warn("[telegram-webhook] Secret token mismatch", { channelId });
     await db
       .update(channels)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -146,7 +147,7 @@ export async function POST(
         try {
           botToken = decrypt(channel.telegramBotTokenRef!);
         } catch {
-          console.error("[telegram-webhook] Failed to decrypt bot token for channel", channelId);
+          logger.error("[telegram-webhook] Failed to decrypt bot token", { channelId });
           return NextResponse.json({ ok: true });
         }
 
@@ -171,7 +172,7 @@ export async function POST(
             await sendTelegramMessage(botToken, chatId, reply);
           }
         } catch (err) {
-          console.error("[telegram-webhook] Agent error:", err);
+          logger.error("[telegram-webhook] Agent error", { channelId, err: String(err) });
           await sendTelegramMessage(botToken, chatId, "Sorry, something went wrong. Please try again.");
         }
       }

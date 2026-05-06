@@ -1,0 +1,75 @@
+stages:
+  - install
+  - validate
+  - build
+
+variables:
+  PNPM_VERSION: "9"
+  NODE_VERSION: "20"
+  PNPM_HOME: "${CI_PROJECT_DIR}/.pnpm-home"
+
+default:
+  image: node:20-alpine
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@${PNPM_VERSION} --activate
+    - pnpm config set store-dir "${CI_PROJECT_DIR}/.pnpm-store"
+
+install:
+  stage: install
+  script:
+    - pnpm install --frozen-lockfile
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+  artifacts:
+    paths:
+      - node_modules/
+      - apps/web/node_modules/
+      - packages/*/node_modules/
+    expire_in: 1 hour
+
+lint:
+  stage: validate
+  needs: [install]
+  script:
+    - pnpm lint
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+    policy: pull
+
+typecheck:
+  stage: validate
+  needs: [install]
+  script:
+    - pnpm typecheck
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+    policy: pull
+
+build:
+  stage: build
+  needs: [lint, typecheck]
+  script:
+    - pnpm build
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+    policy: pull
+  only:
+    - main
+    - /^release\/.*/

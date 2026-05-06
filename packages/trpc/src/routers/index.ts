@@ -7,6 +7,7 @@ import { bookingsRouter } from "./bookings";
 import { auditRouter } from "./audit";
 import { channelsRouter } from "./channels";
 import { integrationsRouter } from "./integrations";
+import { billingRouter } from "./billing";
 
 /**
  * Root application router.
@@ -25,6 +26,7 @@ export const appRouter = router({
   audit: auditRouter,
   channels: channelsRouter,
   integrations: integrationsRouter,
+  billing: billingRouter,
 });
 
 export type AppRouter = typeof appRouter;
