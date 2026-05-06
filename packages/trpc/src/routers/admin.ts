@@ -1,0 +1,320 @@
+/**
+ * Super Admin tRPC router.
+ *
+ * SECURITY: All procedures check that the caller's Clerk userId matches
+ * SUPER_ADMIN_USER_ID from the environment. This router bypasses tenant
+ * scoping and reads across ALL tenants.
+ *
+ * The super admin may not be a member of any Clerk org, so ctx.tenant may be
+ * null even for them. We call auth() directly to get their userId.
+ */
+
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { eq, and, desc, sql, max, isNull } from "drizzle-orm";
+import {
+  tenants,
+  tenantSettings,
+  staff,
+  channels,
+  bookings,
+  conversations,
+  usageMetering,
+  PLAN_QUOTAS,
+} from "@booking-agent/db";
+import { router, middleware, publicProcedure } from "../trpc";
+import { auth } from "@clerk/nextjs/server";
+
+// ─── Super admin middleware ───────────────────────────────────────────────────
+
+const isSuperAdmin = middleware(async ({ ctx, next }) => {
+  const { userId } = await auth();
+
+  const superAdminId = process.env.SUPER_ADMIN_USER_ID;
+
+  if (!superAdminId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "SUPER_ADMIN_USER_ID is not configured.",
+    });
+  }
+
+  if (!userId || userId !== superAdminId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Access denied. Super admin only.",
+    });
+  }
+
+  return next({ ctx });
+});
+
+export const superAdminProcedure = publicProcedure.use(isSuperAdmin);
+
+// ─── Admin router ─────────────────────────────────────────────────────────────
+
+export const adminRouter = router({
+  /**
+   * List all tenants with aggregate stats.
+   */
+  listTenants: superAdminProcedure.query(async ({ ctx }) => {
+    // Fetch all non-deleted tenants
+    const allTenants = await ctx.db
+      .select()
+      .from(tenants)
+      .where(isNull(tenants.deletedAt))
+      .orderBy(desc(tenants.createdAt));
+
+    if (allTenants.length === 0) return [];
+
+    const tenantIds = allTenants.map((t) => t.id);
+
+    // Booking counts per tenant
+    const bookingCounts = await ctx.db
+      .select({
+        tenantId: bookings.tenantId,
+        count: sql<number>`cast(count(*) as int)`,
+        lastAt: max(bookings.startsAt),
+      })
+      .from(bookings)
+      .where(
+        sql`${bookings.tenantId} = any(${sql.raw(`'{${tenantIds.join(",")}}'::uuid[]`)})`
+      )
+      .groupBy(bookings.tenantId);
+
+    // Staff counts per tenant
+    const staffCounts = await ctx.db
+      .select({
+        tenantId: staff.tenantId,
+        count: sql<number>`cast(count(*) as int)`,
+      })
+      .from(staff)
+      .where(
+        sql`${staff.tenantId} = any(${sql.raw(`'{${tenantIds.join(",")}}'::uuid[]`)})`
+      )
+      .groupBy(staff.tenantId);
+
+    // Channel counts per tenant
+    const channelCounts = await ctx.db
+      .select({
+        tenantId: channels.tenantId,
+        count: sql<number>`cast(count(*) as int)`,
+      })
+      .from(channels)
+      .where(
+        sql`${channels.tenantId} = any(${sql.raw(`'{${tenantIds.join(",")}}'::uuid[]`)})`
+      )
+      .groupBy(channels.tenantId);
+
+    // Build lookup maps
+    const bookingMap = new Map(bookingCounts.map((r) => [r.tenantId, r]));
+    const staffMap   = new Map(staffCounts.map((r) => [r.tenantId, r.count]));
+    const channelMap = new Map(channelCounts.map((r) => [r.tenantId, r.count]));
+
+    return allTenants.map((t) => ({
+      id:            t.id,
+      name:          t.name,
+      slug:          t.slug,
+      plan:          t.plan,
+      status:        t.status,
+      createdAt:     t.createdAt,
+      bookingCount:  bookingMap.get(t.id)?.count ?? 0,
+      staffCount:    staffMap.get(t.id) ?? 0,
+      channelCount:  channelMap.get(t.id) ?? 0,
+      lastBookingAt: bookingMap.get(t.id)?.lastAt ?? null,
+    }));
+  }),
+
+  /**
+   * Get full detail for a single tenant.
+   */
+  getTenant: superAdminProcedure
+    .input(z.object({ tenantId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.id, input.tenantId),
+      });
+
+      if (!tenant) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+      }
+
+      // Settings — return only key names (mask values)
+      const settingRows = await ctx.db
+        .select({ key: tenantSettings.key })
+        .from(tenantSettings)
+        .where(eq(tenantSettings.tenantId, input.tenantId));
+      const settingKeys = settingRows.map((r) => r.key);
+
+      // Aggregate stats
+      const [bookingCountRow] = await ctx.db
+        .select({ count: sql<number>`cast(count(*) as int)` })
+        .from(bookings)
+        .where(eq(bookings.tenantId, input.tenantId));
+
+      const [staffCountRow] = await ctx.db
+        .select({ count: sql<number>`cast(count(*) as int)` })
+        .from(staff)
+        .where(eq(staff.tenantId, input.tenantId));
+
+      const [channelCountRow] = await ctx.db
+        .select({ count: sql<number>`cast(count(*) as int)` })
+        .from(channels)
+        .where(eq(channels.tenantId, input.tenantId));
+
+      const [activeConvRow] = await ctx.db
+        .select({ count: sql<number>`cast(count(*) as int)` })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.tenantId, input.tenantId),
+            eq(conversations.isActive, true)
+          )
+        );
+
+      // Current month AI token usage
+      const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+      const [tokenRow] = await ctx.db
+        .select({ count: usageMetering.count })
+        .from(usageMetering)
+        .where(
+          and(
+            eq(usageMetering.tenantId, input.tenantId),
+            eq(usageMetering.metric, "ai_tokens"),
+            eq(usageMetering.periodMonth, currentMonth)
+          )
+        );
+
+      const planQuota = PLAN_QUOTAS[tenant.plan];
+
+      return {
+        tenant,
+        settings: settingKeys,
+        stats: {
+          bookingCount:       bookingCountRow?.count ?? 0,
+          staffCount:         staffCountRow?.count ?? 0,
+          channelCount:       channelCountRow?.count ?? 0,
+          activeConversations: activeConvRow?.count ?? 0,
+          monthlyAiTokens:    tokenRow?.count ?? 0,
+          aiTokenQuota:
+            planQuota.aiTokensPerMonth === Infinity
+              ? null
+              : planQuota.aiTokensPerMonth,
+        },
+      };
+    }),
+
+  /**
+   * Paginated bookings for a tenant, with service and staff names.
+   */
+  getTenantBookings: superAdminProcedure
+    .input(
+      z.object({
+        tenantId: z.string().uuid(),
+        page:     z.number().int().min(1).default(1),
+        pageSize: z.number().int().min(1).max(100).default(20),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, page, pageSize } = input;
+      const offset = (page - 1) * pageSize;
+
+      const [countRow] = await ctx.db
+        .select({ total: sql<number>`cast(count(*) as int)` })
+        .from(bookings)
+        .where(eq(bookings.tenantId, tenantId));
+
+      const rows = await ctx.db.query.bookings.findMany({
+        where: eq(bookings.tenantId, tenantId),
+        with: {
+          service: { columns: { name: true, colorHex: true } },
+          staff:   { columns: { displayName: true } },
+        },
+        orderBy: (b, { desc: d }) => d(b.startsAt),
+        limit:  pageSize,
+        offset,
+      });
+
+      return {
+        data:     rows,
+        total:    countRow?.total ?? 0,
+        page,
+        pageSize,
+      };
+    }),
+
+  /**
+   * Channels for a tenant (secrets masked — only presence indicated).
+   */
+  getTenantChannels: superAdminProcedure
+    .input(z.object({ tenantId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db.query.channels.findMany({
+        where: eq(channels.tenantId, input.tenantId),
+        orderBy: (ch, { desc: d }) => d(ch.createdAt),
+      });
+
+      // Mask actual secret values — just indicate whether ref keys are set
+      return rows.map((ch) => ({
+        id:              ch.id,
+        type:            ch.type,
+        displayName:     ch.displayName,
+        status:          ch.status,
+        lastWebhookAt:   ch.lastWebhookAt,
+        lastErrorAt:     ch.lastErrorAt,
+        lastErrorMessage: ch.lastErrorMessage,
+        createdAt:       ch.createdAt,
+        hasWhatsappSecret: ch.whatsappAppSecretRef !== null,
+        hasWhatsappToken:  ch.whatsappAccessTokenRef !== null,
+        hasTelegramToken:  ch.telegramBotTokenRef !== null,
+      }));
+    }),
+
+  /**
+   * Update tenant status.
+   */
+  updateTenantStatus: superAdminProcedure
+    .input(
+      z.object({
+        tenantId: z.string().uuid(),
+        status:   z.enum(["active", "suspended"]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [updated] = await ctx.db
+        .update(tenants)
+        .set({ status: input.status, updatedAt: new Date() })
+        .where(eq(tenants.id, input.tenantId))
+        .returning({ id: tenants.id, status: tenants.status });
+
+      if (!updated) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+      }
+
+      return updated;
+    }),
+
+  /**
+   * Update tenant plan.
+   */
+  updateTenantPlan: superAdminProcedure
+    .input(
+      z.object({
+        tenantId: z.string().uuid(),
+        plan:     z.enum(["starter", "growth", "enterprise"]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [updated] = await ctx.db
+        .update(tenants)
+        .set({ plan: input.plan, updatedAt: new Date() })
+        .where(eq(tenants.id, input.tenantId))
+        .returning({ id: tenants.id, plan: tenants.plan });
+
+      if (!updated) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+      }
+
+      return updated;
+    }),
+});

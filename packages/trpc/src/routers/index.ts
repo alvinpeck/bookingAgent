@@ -9,6 +9,7 @@ import { channelsRouter } from "./channels";
 import { integrationsRouter } from "./integrations";
 import { billingRouter } from "./billing";
 import { complianceRouter } from "./compliance";
+import { adminRouter } from "./admin";
 
 /**
  * Root application router.
@@ -30,6 +31,7 @@ export const appRouter = router({
   integrations: integrationsRouter,
   billing: billingRouter,
   compliance: complianceRouter,
+  admin: adminRouter,
 });
 
 export type AppRouter = typeof appRouter;
