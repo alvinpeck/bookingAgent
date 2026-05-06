@@ -317,4 +317,54 @@ export const adminRouter = router({
 
       return updated;
     }),
+
+  /**
+   * Invite a user to a tenant's Clerk organization by email.
+   * Calls the Clerk Backend API to send an invitation email.
+   */
+  inviteMember: superAdminProcedure
+    .input(
+      z.object({
+        tenantId: z.string().uuid(),
+        email:    z.string().email(),
+        role:     z.enum(["org:admin", "org:member"]).default("org:member"),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Look up the tenant's Clerk org ID
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.id, input.tenantId),
+        columns: { id: true, name: true, clerkOrgId: true },
+      });
+
+      if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+
+      const clerkSecret = process.env.CLERK_SECRET_KEY;
+      if (!clerkSecret) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "CLERK_SECRET_KEY not set." });
+
+      // Call Clerk Backend API to create an organization invitation
+      const res = await fetch(
+        `https://api.clerk.com/v1/organizations/${tenant.clerkOrgId}/invitations`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${clerkSecret}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email_address: input.email,
+            role: input.role,
+            redirect_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { errors?: { message: string }[] };
+        const msg = body.errors?.[0]?.message ?? `Clerk API error ${res.status}`;
+        throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+      }
+
+      return { success: true, email: input.email, tenantName: tenant.name };
+    }),
 });

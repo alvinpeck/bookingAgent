@@ -93,6 +93,22 @@ export default function TenantDetailPage() {
   >("");
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
+  // Invite member
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"org:admin" | "org:member">("org:member");
+  const [inviteMsg, setInviteMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const inviteMember = trpc.admin.inviteMember.useMutation({
+    onSuccess: (data) => {
+      setInviteEmail("");
+      setInviteMsg({ type: "success", text: `Invitation sent to ${data.email}` });
+      setTimeout(() => setInviteMsg(null), 5000);
+    },
+    onError: (err) => {
+      setInviteMsg({ type: "error", text: err.message });
+    },
+  });
+
   const updatePlan = trpc.admin.updateTenantPlan.useMutation({
     onSuccess: () => {
       utils.admin.getTenant.invalidate({ tenantId });
@@ -296,7 +312,51 @@ export default function TenantDetailPage() {
         </div>
       </div>
 
-      {/* ── Section 4: Settings keys ── */}
+      {/* ── Section 4: Invite Member ── */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl px-6 py-5">
+        <h2 className="text-sm font-semibold text-white mb-4">Invite Member</h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Send an invitation email so a user can join this workspace. They will receive an email with a link to sign up or sign in.
+        </p>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-slate-400">Email address</label>
+            <input
+              type="email"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              placeholder="client@example.com"
+              className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 w-64 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-slate-400">Role</label>
+            <select
+              value={inviteRole}
+              onChange={(e) => setInviteRole(e.target.value as "org:admin" | "org:member")}
+              className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="org:member">Member</option>
+              <option value="org:admin">Admin</option>
+            </select>
+          </div>
+          <button
+            onClick={() => inviteMember.mutate({ tenantId, email: inviteEmail, role: inviteRole })}
+            disabled={inviteMember.isPending || !inviteEmail}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:text-indigo-400 text-white text-sm rounded-lg transition-colors"
+          >
+            {inviteMember.isPending ? "Sending…" : "Send Invitation"}
+          </button>
+        </div>
+        {inviteMsg && (
+          <p className={`mt-3 text-xs ${inviteMsg.type === "success" ? "text-green-400" : "text-red-400"}`}>
+            {inviteMsg.text}
+          </p>
+        )}
+      </div>
+
+      {/* ── Section 5: Settings keys ── */}
+
       <div className="bg-slate-900 border border-slate-800 rounded-xl px-6 py-5">
         <h2 className="text-sm font-semibold text-white mb-3">
           Settings Keys
