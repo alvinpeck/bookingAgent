@@ -2,20 +2,46 @@ import { UserButton, OrganizationSwitcher } from "@clerk/nextjs";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
+import { db, tenants, tenantUsers } from "@booking-agent/db";
+import { eq, and } from "drizzle-orm";
 
-const NAV_LINKS = [
-  { href: "/dashboard",     label: "Dashboard" },
-  { href: "/bookings",      label: "Bookings" },
-  { href: "/services",      label: "Services" },
-  { href: "/availability",  label: "Availability" },
-  { href: "/staff",         label: "Staff" },
-  { href: "/channels",      label: "Channels" },
-  { href: "/integrations",  label: "Integrations" },
-  { href: "/usage",         label: "Usage" },
+// ─── Nav definitions ──────────────────────────────────────────────────────────
+
+// Admin (owner/admin) sees everything
+const ADMIN_NAV = [
+  { href: "/dashboard",         label: "Dashboard" },
+  { href: "/bookings",          label: "Bookings" },
+  { href: "/services",          label: "Services" },
+  { href: "/availability",      label: "Availability" },
+  { href: "/staff",             label: "Staff" },
+  { href: "/channels",          label: "Channels" },
+  { href: "/integrations",      label: "Integrations" },
+  { href: "/usage",             label: "Usage" },
   { href: "/settings",          label: "Settings" },
   { href: "/settings/api-keys", label: "API Keys" },
-  { href: "/audit",         label: "Audit Log" },
+  { href: "/audit",             label: "Audit Log" },
 ];
+
+// User (staff) sees only what they need
+const USER_NAV = [
+  { href: "/dashboard",    label: "Dashboard" },
+  { href: "/bookings",     label: "Bookings" },
+  { href: "/availability", label: "Availability" },
+];
+
+const ROLE_LABEL: Record<string, string> = {
+  owner:    "Admin",
+  admin:    "Admin",
+  staff:    "User",
+  readonly: "User",
+};
+
+const ROLE_BADGE: Record<string, string> = {
+  owner:    "bg-indigo-100 text-indigo-700",
+  admin:    "bg-indigo-100 text-indigo-700",
+  staff:    "bg-gray-100 text-gray-600",
+  readonly: "bg-gray-100 text-gray-600",
+};
 
 export default async function BackOfficeLayout({
   children,
@@ -26,6 +52,29 @@ export default async function BackOfficeLayout({
 
   if (!userId) redirect("/sign-in");
   if (!orgId) redirect("/onboarding");
+
+  // Resolve tenant + role
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.clerkOrgId, orgId),
+    columns: { id: true },
+  });
+
+  const tenantUser = tenant
+    ? await db.query.tenantUsers.findFirst({
+        where: and(
+          eq(tenantUsers.tenantId, tenant.id),
+          eq(tenantUsers.clerkUserId, userId),
+          eq(tenantUsers.isActive, true)
+        ),
+        columns: { role: true, firstName: true, lastName: true, email: true },
+      })
+    : null;
+
+  const role = tenantUser?.role ?? "staff";
+  const isAdmin = role === "owner" || role === "admin";
+  const navLinks = isAdmin ? ADMIN_NAV : USER_NAV;
+  const roleLabel = ROLE_LABEL[role] ?? "User";
+  const roleBadge = ROLE_BADGE[role] ?? "bg-gray-100 text-gray-600";
 
   return (
     <div className="min-h-screen flex bg-gray-50">
@@ -56,7 +105,7 @@ export default async function BackOfficeLayout({
 
         {/* Nav */}
         <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
-          {NAV_LINKS.map(({ href, label }) => (
+          {navLinks.map(({ href, label }) => (
             <Link
               key={href}
               href={href}
@@ -67,10 +116,15 @@ export default async function BackOfficeLayout({
           ))}
         </nav>
 
-        {/* User */}
+        {/* User + role */}
         <div className="px-4 py-4 border-t border-gray-200 flex items-center gap-2">
           <UserButton afterSignOutUrl="/sign-in" />
-          <span className="text-xs text-gray-500 truncate">Account</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-xs text-gray-500 truncate">Account</span>
+            <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full w-fit mt-0.5 ${roleBadge}`}>
+              {roleLabel}
+            </span>
+          </div>
         </div>
       </aside>
 

@@ -336,8 +336,8 @@ export default function TenantDetailPage() {
               onChange={(e) => setInviteRole(e.target.value as "org:admin" | "org:member")}
               className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="org:member">Member</option>
-              <option value="org:admin">Admin</option>
+              <option value="org:member">User (limited access)</option>
+              <option value="org:admin">Admin (full access)</option>
             </select>
           </div>
           <button
