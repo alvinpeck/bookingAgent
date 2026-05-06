@@ -8,6 +8,7 @@ import { auditRouter } from "./audit";
 import { channelsRouter } from "./channels";
 import { integrationsRouter } from "./integrations";
 import { billingRouter } from "./billing";
+import { complianceRouter } from "./compliance";
 
 /**
  * Root application router.
@@ -16,6 +17,7 @@ import { billingRouter } from "./billing";
  *   - integrationsRouter (Phase 6 — Google Calendar)
  *   - agentRouter        (Phase 10 — AI booking agent)
  *   - billingRouter      (Phase 11 — metering, quotas)
+ *   - complianceRouter   (Phase 13 — GDPR / data retention)
  */
 export const appRouter = router({
   tenant: tenantRouter,
@@ -27,6 +29,7 @@ export const appRouter = router({
   channels: channelsRouter,
   integrations: integrationsRouter,
   billing: billingRouter,
+  compliance: complianceRouter,
 });
 
 export type AppRouter = typeof appRouter;

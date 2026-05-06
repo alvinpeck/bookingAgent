@@ -2,6 +2,7 @@ stages:
   - install
   - validate
   - build
+  - cron
 
 variables:
   PNPM_VERSION: "9"
@@ -73,3 +74,21 @@ build:
   only:
     - main
     - /^release\/.*/
+
+# ─── Scheduled data retention cron ───────────────────────────────────────────
+# Trigger via GitLab CI → Schedules (or an external cron).
+# Required CI/CD variables: APP_URL, CRON_SECRET
+retention:
+  stage: cron
+  image: curlimages/curl:latest
+  before_script: []  # override default node before_script
+  script:
+    - |
+      echo "Running data retention cleanup..."
+      RESPONSE=$(curl --fail --silent --show-error \
+        --max-time 120 \
+        -H "Authorization: Bearer ${CRON_SECRET}" \
+        "${APP_URL}/api/cron/retention")
+      echo "Response: ${RESPONSE}"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
