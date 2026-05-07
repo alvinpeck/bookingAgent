@@ -1,7 +1,7 @@
-import { UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { auth } from "@clerk/nextjs/server";
+import { getAdminSession } from "@/lib/admin-auth";
+import { AdminLogoutButton } from "./_components/AdminLogoutButton";
 
 const NAV_LINKS = [
   { href: "/admin",         label: "Dashboard" },
@@ -13,10 +13,10 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { userId } = await auth();
+  const adminUser = await getAdminSession();
 
-  if (!userId || userId !== process.env.SUPER_ADMIN_USER_ID) {
-    redirect("/sign-in");
+  if (!adminUser) {
+    redirect("/admin/login");
   }
 
   return (
@@ -46,10 +46,13 @@ export default async function AdminLayout({
           ))}
         </nav>
 
-        {/* User */}
-        <div className="px-4 py-4 border-t border-slate-800 flex items-center gap-2">
-          <UserButton afterSignOutUrl="/sign-in" />
-          <span className="text-xs text-slate-500 truncate">Account</span>
+        {/* User footer */}
+        <div className="px-4 py-4 border-t border-slate-800">
+          <div className="mb-3">
+            <p className="text-sm font-medium text-white truncate">{adminUser.name}</p>
+            <p className="text-xs text-slate-500 truncate">{adminUser.email}</p>
+          </div>
+          <AdminLogoutButton />
         </div>
       </aside>
 

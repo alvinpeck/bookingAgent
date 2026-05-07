@@ -1,18 +1,15 @@
 /**
  * Super Admin tRPC router.
  *
- * SECURITY: All procedures check that the caller's Clerk userId matches
- * SUPER_ADMIN_USER_ID from the environment. This router bypasses tenant
+ * SECURITY: All procedures validate the caller's admin session cookie against
+ * the admin_sessions table in the database. This router bypasses tenant
  * scoping and reads across ALL tenants.
- *
- * The super admin may not be a member of any Clerk org, so ctx.tenant may be
- * null even for them. We call auth() directly to get their userId.
  */
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, and, desc, sql, max, isNull } from "drizzle-orm";
-import { clerkClient } from "@clerk/nextjs/server";
+import { eq, and, desc, sql, max, isNull, gt } from "drizzle-orm";
+import { cookies } from "next/headers";
 import {
   tenants,
   tenantSettings,
@@ -21,26 +18,51 @@ import {
   bookings,
   conversations,
   usageMetering,
+  adminUsers,
+  adminSessions,
   PLAN_QUOTAS,
 } from "@booking-agent/db";
 import { router, middleware, publicProcedure } from "../trpc";
-import { auth } from "@clerk/nextjs/server";
+
+const ADMIN_COOKIE = "admin_session";
 
 // ─── Super admin middleware ───────────────────────────────────────────────────
 
 const isSuperAdmin = middleware(async ({ ctx, next }) => {
-  const { userId } = await auth();
+  const cookieStore = await cookies();
+  const token = cookieStore.get(ADMIN_COOKIE)?.value;
 
-  const superAdminId = process.env.SUPER_ADMIN_USER_ID;
-
-  if (!superAdminId) {
+  if (!token) {
     throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "SUPER_ADMIN_USER_ID is not configured.",
+      code: "FORBIDDEN",
+      message: "Access denied. Super admin only.",
     });
   }
 
-  if (!userId || userId !== superAdminId) {
+  // Validate token against DB
+  const session = await ctx.db.query.adminSessions.findFirst({
+    where: and(
+      eq(adminSessions.token, token),
+      gt(adminSessions.expiresAt, new Date())
+    ),
+  });
+
+  if (!session) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Access denied. Super admin only.",
+    });
+  }
+
+  const adminUser = await ctx.db.query.adminUsers.findFirst({
+    where: and(
+      eq(adminUsers.id, session.adminUserId),
+      eq(adminUsers.isActive, true)
+    ),
+    columns: { id: true, email: true, name: true },
+  });
+
+  if (!adminUser) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Access denied. Super admin only.",
@@ -355,7 +377,6 @@ export const adminRouter = router({
       const org = await orgRes.json() as { id: string; name: string; slug: string };
 
       // 2 — Upsert tenant row in our DB
-      const { tenantSettings: _ts, ...tenantCols } = await import("@booking-agent/db").then(m => m);
       const [tenant] = await ctx.db
         .insert(tenants)
         .values({

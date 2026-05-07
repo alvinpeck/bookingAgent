@@ -15,3 +15,4 @@ export * from "./channels";
 export * from "./integrations";
 export * from "./audit";
 export * from "./relations";
+export * from "./admin";
