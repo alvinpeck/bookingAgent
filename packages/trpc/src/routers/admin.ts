@@ -21,7 +21,7 @@ import {
   PLAN_QUOTAS,
 } from "@booking-agent/db";
 import { router, middleware, publicProcedure } from "../trpc";
-import { verifyJwt, ADMIN_COOKIE } from "../../lib/admin-auth-jwt";
+import { verifyJwt, ADMIN_COOKIE } from "../lib/admin-auth-jwt";
 
 // ─── Super admin middleware — JWT, no DB query ────────────────────────────────
 
