@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/admin-auth";
-import { AdminLogoutButton } from "./_components/AdminLogoutButton";
+import { AdminLogoutButton } from "../_components/AdminLogoutButton";
 
 const NAV_LINKS = [
   { href: "/admin",         label: "Dashboard" },
