@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db, adminUsers } from "@booking-agent/db";
-import { eq, and } from "drizzle-orm";
-import { verifyPassword, createSession, ADMIN_COOKIE } from "@/lib/admin-auth";
+import { verifyAdminCredentials, createSession, ADMIN_COOKIE } from "@/lib/admin-auth";
+
+const JWT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 export async function POST(req: NextRequest) {
   let email: string;
@@ -12,40 +12,27 @@ export async function POST(req: NextRequest) {
     if (typeof body.email !== "string" || typeof body.password !== "string") {
       return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
-    email = body.email;
+    email = body.email.toLowerCase().trim();
     password = body.password;
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  // Look up active user by email
-  const user = await db.query.adminUsers.findFirst({
-    where: and(
-      eq(adminUsers.email, email.toLowerCase().trim()),
-      eq(adminUsers.isActive, true)
-    ),
-  });
-
+  // Verify credentials — only DB call during login
+  const user = await verifyAdminCredentials(email, password);
   if (!user) {
     return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
   }
 
-  const valid = await verifyPassword(password, user.passwordHash);
-  if (!valid) {
-    return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-  }
-
-  const token = await createSession(user.id);
-
-  const isProduction = process.env.NODE_ENV === "production";
-  const maxAge = 7 * 24 * 60 * 60; // 7 days in seconds
+  // Sign JWT — no DB write needed
+  const token = createSession(user);
 
   const response = NextResponse.json({ ok: true });
   response.cookies.set(ADMIN_COOKIE, token, {
     httpOnly: true,
-    secure: isProduction,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge,
+    maxAge: JWT_TTL_SECONDS,
     path: "/",
   });
 

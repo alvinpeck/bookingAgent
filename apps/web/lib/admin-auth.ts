@@ -1,22 +1,103 @@
-import { db, adminUsers, adminSessions } from "@booking-agent/db";
-import { eq, and, gt } from "drizzle-orm";
-import { scrypt, randomBytes, timingSafeEqual } from "crypto";
+/**
+ * Admin authentication — JWT-based, stateless.
+ *
+ * Uses Node.js built-in `crypto` only — no external JWT library.
+ * Algorithm: HMAC-SHA256 (HS256)
+ * Secret:    JWT_SECRET env var (min 32 chars)
+ * TTL:       7 days
+ *
+ * Password hashing: scrypt (Node built-in, no bcrypt needed)
+ */
+
+import { db, adminUsers } from "@booking-agent/db";
+import { eq, and } from "drizzle-orm";
+import { createHmac, scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { cookies } from "next/headers";
 
 const scryptAsync = promisify(scrypt);
 
 export const ADMIN_COOKIE = "admin_session";
-const SESSION_TTL_DAYS = 7;
+const JWT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
-// Hash a password
+// ─── JWT helpers (no external library) ───────────────────────────────────────
+
+function b64url(input: string | Buffer): string {
+  const buf = typeof input === "string" ? Buffer.from(input) : input;
+  return buf.toString("base64url");
+}
+
+function getSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error("JWT_SECRET env var must be set and at least 32 characters.");
+  }
+  return secret;
+}
+
+export interface AdminPayload {
+  sub: string;   // adminUser.id
+  email: string;
+  name: string;
+  iat: number;   // issued at (unix seconds)
+  exp: number;   // expires at (unix seconds)
+}
+
+/** Sign a JWT and return the token string */
+export function signJwt(payload: Omit<AdminPayload, "iat" | "exp">): string {
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload: AdminPayload = {
+    ...payload,
+    iat: now,
+    exp: now + JWT_TTL_SECONDS,
+  };
+
+  const header  = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body    = b64url(JSON.stringify(fullPayload));
+  const signing = `${header}.${body}`;
+  const sig     = createHmac("sha256", getSecret()).update(signing).digest("base64url");
+
+  return `${signing}.${sig}`;
+}
+
+/** Verify a JWT — returns payload or null if invalid/expired */
+export function verifyJwt(token: string): AdminPayload | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, body, sig] = parts as [string, string, string];
+
+    // Verify signature (timing-safe)
+    const expected = createHmac("sha256", getSecret())
+      .update(`${header}.${body}`)
+      .digest("base64url");
+    const sigBuf  = Buffer.from(sig,      "base64url");
+    const expBuf  = Buffer.from(expected, "base64url");
+    if (sigBuf.length !== expBuf.length) return null;
+    if (!timingSafeEqual(sigBuf, expBuf)) return null;
+
+    // Decode payload
+    const payload = JSON.parse(
+      Buffer.from(body, "base64url").toString("utf8")
+    ) as AdminPayload;
+
+    // Check expiry
+    if (Math.floor(Date.now() / 1000) > payload.exp) return null;
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Password hashing ─────────────────────────────────────────────────────────
+
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
   const hash = (await scryptAsync(password, salt, 64)) as Buffer;
   return `${salt}:${hash.toString("hex")}`;
 }
 
-// Verify a password against a stored hash
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
@@ -28,47 +109,40 @@ export async function verifyPassword(password: string, stored: string): Promise<
   }
 }
 
-// Create a session and return the token
-export async function createSession(adminUserId: string): Promise<string> {
-  const token = randomBytes(32).toString("hex");
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + SESSION_TTL_DAYS);
+// ─── Session helpers ──────────────────────────────────────────────────────────
 
-  await db.insert(adminSessions).values({
-    adminUserId,
-    token,
-    expiresAt,
-  } as any);
-
-  return token;
+/** Create a JWT for the given admin user and return the token string */
+export function createSession(user: { id: string; email: string; name: string }): string {
+  return signJwt({ sub: user.id, email: user.email, name: user.name });
 }
 
-// Validate session from cookie — returns adminUser or null
-export async function getAdminSession() {
+/**
+ * Read + verify the JWT from the admin_session cookie.
+ * Returns the decoded payload or null — no DB query needed.
+ */
+export async function getAdminSession(): Promise<AdminPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(ADMIN_COOKIE)?.value;
   if (!token) return null;
-
-  const session = await db.query.adminSessions.findFirst({
-    where: and(
-      eq(adminSessions.token, token),
-      gt(adminSessions.expiresAt, new Date())
-    ),
-  });
-  if (!session) return null;
-
-  const user = await db.query.adminUsers.findFirst({
-    where: and(
-      eq(adminUsers.id, session.adminUserId),
-      eq(adminUsers.isActive, true)
-    ),
-    columns: { id: true, email: true, name: true },
-  });
-
-  return user ?? null;
+  return verifyJwt(token);
 }
 
-// Delete session (logout)
-export async function deleteSession(token: string): Promise<void> {
-  await db.delete(adminSessions).where(eq(adminSessions.token, token));
+/**
+ * Verify admin credentials and return user if valid.
+ * This is the only place we touch the DB during auth.
+ */
+export async function verifyAdminCredentials(
+  email: string,
+  password: string
+): Promise<{ id: string; email: string; name: string } | null> {
+  const user = await db.query.adminUsers.findFirst({
+    where: and(eq(adminUsers.email, email), eq(adminUsers.isActive, true)),
+    columns: { id: true, email: true, name: true, passwordHash: true },
+  });
+
+  if (!user) return null;
+  const valid = await verifyPassword(password, user.passwordHash);
+  if (!valid) return null;
+
+  return { id: user.id, email: user.email, name: user.name };
 }

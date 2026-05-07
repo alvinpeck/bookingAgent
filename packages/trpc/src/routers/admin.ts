@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, and, desc, sql, max, isNull, gt } from "drizzle-orm";
+import { eq, desc, sql, max, isNull } from "drizzle-orm";
 import { cookies } from "next/headers";
 import {
   tenants,
@@ -18,55 +18,24 @@ import {
   bookings,
   conversations,
   usageMetering,
-  adminUsers,
-  adminSessions,
   PLAN_QUOTAS,
 } from "@booking-agent/db";
 import { router, middleware, publicProcedure } from "../trpc";
+import { verifyJwt, ADMIN_COOKIE } from "../../lib/admin-auth-jwt";
 
-const ADMIN_COOKIE = "admin_session";
-
-// ─── Super admin middleware ───────────────────────────────────────────────────
+// ─── Super admin middleware — JWT, no DB query ────────────────────────────────
 
 const isSuperAdmin = middleware(async ({ ctx, next }) => {
   const cookieStore = await cookies();
   const token = cookieStore.get(ADMIN_COOKIE)?.value;
 
   if (!token) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Access denied. Super admin only.",
-    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "Access denied. Admin only." });
   }
 
-  // Validate token against DB
-  const session = await ctx.db.query.adminSessions.findFirst({
-    where: and(
-      eq(adminSessions.token, token),
-      gt(adminSessions.expiresAt, new Date())
-    ),
-  });
-
-  if (!session) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Access denied. Super admin only.",
-    });
-  }
-
-  const adminUser = await ctx.db.query.adminUsers.findFirst({
-    where: and(
-      eq(adminUsers.id, session.adminUserId),
-      eq(adminUsers.isActive, true)
-    ),
-    columns: { id: true, email: true, name: true },
-  });
-
-  if (!adminUser) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Access denied. Super admin only.",
-    });
+  const payload = verifyJwt(token);
+  if (!payload) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Access denied. Admin only." });
   }
 
   return next({ ctx });

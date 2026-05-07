@@ -1,15 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
-import { deleteSession, ADMIN_COOKIE } from "@/lib/admin-auth";
-import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
+import { ADMIN_COOKIE } from "@/lib/admin-auth";
 
-export async function POST(_req: NextRequest) {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(ADMIN_COOKIE)?.value;
-
-  if (token) {
-    await deleteSession(token);
-  }
-
+export async function POST() {
+  // JWT is stateless — logout just clears the cookie, no DB needed
   const response = NextResponse.json({ ok: true });
   response.cookies.set(ADMIN_COOKIE, "", {
     httpOnly: true,
@@ -18,6 +11,5 @@ export async function POST(_req: NextRequest) {
     maxAge: 0,
     path: "/",
   });
-
   return response;
 }
