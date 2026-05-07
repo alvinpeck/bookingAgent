@@ -1,140 +1,67 @@
 "use client";
 
-import { useState } from "react";
+import { useUser } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
-import { useUser, useClerk } from "@clerk/nextjs";
+import { useEffect } from "react";
 
+/**
+ * Onboarding page.
+ *
+ * Workspace creation is only allowed via the Super Admin dashboard (/admin).
+ * Regular users who land here without an org are shown a "contact your admin" message.
+ */
 export default function OnboardingPage() {
-  const { user } = useUser();
-  const { createOrganization, setActive } = useClerk();
+  const { user, isLoaded } = useUser();
   const router = useRouter();
 
-  const [businessName, setBusinessName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Auto-generate slug from business name
-  function handleNameChange(name: string) {
-    setBusinessName(name);
-    setSlug(
-      name
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9\s-]/g, "")
-        .replace(/\s+/g, "-")
-        .slice(0, 48)
-    );
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!businessName.trim() || !slug.trim()) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Create a Clerk Organization — this triggers our webhook
-      // which creates the tenant row in our DB automatically
-      const org = await createOrganization({ name: businessName, slug });
-
-      // Set the new org as active
-      await setActive({ organization: org.id });
-
-      // The Clerk webhook (api/webhooks/clerk) will have created the tenant row.
-      // Redirect to the back-office dashboard.
-      router.push("/dashboard");
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
-      setError(message);
-    } finally {
-      setLoading(false);
+  // If the user already belongs to an org, send them to the dashboard
+  useEffect(() => {
+    if (isLoaded && user?.organizationMemberships?.length) {
+      router.replace("/dashboard");
     }
+  }, [isLoaded, user, router]);
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-8 h-8 rounded-full border-2 border-indigo-600 border-t-transparent animate-spin" />
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8">
-        <div className="mb-8">
-          <h1 className="text-2xl font-semibold text-gray-900">
-            Set up your business
-          </h1>
-          <p className="mt-2 text-sm text-gray-500">
-            Welcome{user?.firstName ? `, ${user.firstName}` : ""}. Create your
-            workspace to get started.
-          </p>
+      <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8 text-center">
+        <div className="w-14 h-14 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-5">
+          <svg className="w-7 h-7 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+          </svg>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Business Name */}
-          <div>
-            <label
-              htmlFor="businessName"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Business name
-            </label>
-            <input
-              id="businessName"
-              type="text"
-              required
-              value={businessName}
-              onChange={(e) => handleNameChange(e.target.value)}
-              placeholder="Acme Barbershop"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
+        <h1 className="text-xl font-semibold text-gray-900 mb-2">
+          No workspace assigned
+        </h1>
+        <p className="text-sm text-gray-500 mb-6">
+          Your account hasn&apos;t been added to a workspace yet. Please contact your administrator to get access.
+        </p>
 
-          {/* Slug */}
-          <div>
-            <label
-              htmlFor="slug"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Booking URL
-            </label>
-            <div className="flex items-center border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500">
-              <span className="px-3 py-2 bg-gray-50 text-gray-400 text-sm border-r border-gray-300 whitespace-nowrap">
-                /book/
-              </span>
-              <input
-                id="slug"
-                type="text"
-                required
-                value={slug}
-                onChange={(e) =>
-                  setSlug(
-                    e.target.value
-                      .toLowerCase()
-                      .replace(/[^a-z0-9-]/g, "")
-                      .slice(0, 48)
-                  )
-                }
-                placeholder="acme-barbershop"
-                className="flex-1 px-3 py-2 text-sm focus:outline-none"
-              />
-            </div>
-            <p className="mt-1 text-xs text-gray-400">
-              Lowercase letters, numbers, and hyphens only.
-            </p>
-          </div>
+        <div className="bg-gray-50 rounded-lg px-4 py-3 text-left text-xs text-gray-500 space-y-1">
+          <p className="font-medium text-gray-700">Signed in as</p>
+          <p>{user?.primaryEmailAddress?.emailAddress ?? "—"}</p>
+        </div>
 
-          {error && (
-            <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg">
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading || !businessName.trim() || !slug.trim()}
-            className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            {loading ? "Creating workspace…" : "Create workspace"}
-          </button>
-        </form>
+        <a
+          href="/sign-out"
+          className="mt-5 block text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          onClick={(e) => {
+            e.preventDefault();
+            // Use Clerk sign-out
+            window.location.href = "/sign-in";
+          }}
+        >
+          Sign in with a different account
+        </a>
       </div>
     </div>
   );

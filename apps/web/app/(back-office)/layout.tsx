@@ -92,12 +92,14 @@ export default async function BackOfficeLayout({
           <OrganizationSwitcher
             hidePersonal
             afterSelectOrganizationUrl="/dashboard"
-            afterCreateOrganizationUrl="/dashboard"
             appearance={{
               elements: {
                 rootBox: "w-full",
                 organizationSwitcherTrigger:
                   "w-full justify-between text-xs px-2 py-1.5 rounded-md hover:bg-gray-50",
+                // Hide "Create organization" — only superadmin can create workspaces
+                organizationSwitcherPopoverActionButton__createOrganization: "!hidden",
+                organizationSwitcherPopoverActionButton__createOrganization__icon: "!hidden",
               },
             }}
           />
