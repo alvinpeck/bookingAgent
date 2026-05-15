@@ -18,15 +18,23 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 60 * 1000, // 1 minute
+            // Data stays "fresh" for 2 min — no re-fetch while navigating between pages
+            staleTime: 2 * 60 * 1000,
+            // Keep unused data in cache for 10 min so navigating back is instant
+            gcTime: 10 * 60 * 1000,
+            // Never refetch just because the user switched browser tabs or clicked back in.
+            // This is the single biggest source of perceived lag in back-office apps.
+            refetchOnWindowFocus: false,
+            // Only reconnect-refetch in production — dev HMR triggers spurious reconnects
+            refetchOnReconnect: process.env.NODE_ENV === "production",
             retry: (failureCount, error) => {
-              // Don't retry on 4xx errors
+              // Don't retry on 4xx errors — they won't fix themselves
               if (
                 error instanceof Error &&
                 "data" in error &&
                 typeof (error as { data?: { httpStatus?: number } }).data?.httpStatus === "number" &&
-                ((error as { data: { httpStatus: number } }).data.httpStatus >= 400) &&
-                ((error as { data: { httpStatus: number } }).data.httpStatus < 500)
+                (error as { data: { httpStatus: number } }).data.httpStatus >= 400 &&
+                (error as { data: { httpStatus: number } }).data.httpStatus < 500
               ) {
                 return false;
               }
@@ -49,6 +57,9 @@ export function TRPCProvider({ children }: { children: React.ReactNode }) {
           url: `${getBaseUrl()}/api/trpc`,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           transformer: superjson as any,
+          // Batch window: collect all queries fired in the same JS tick into one
+          // HTTP request. Default is already enabled; explicit for clarity.
+          maxURLLength: 2083,
         }),
       ],
     })

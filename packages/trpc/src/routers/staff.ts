@@ -79,7 +79,7 @@ export const staffRouter = router({
       const [created] = await ctx.db.transaction(async (tx) => {
         const [s] = await tx
           .insert(staff)
-          .values({ tenantId: ctx.tenant.id, tenantUserId: user.id, displayName: input.displayName, bio: input.bio ?? null })
+          .values({ tenantId: ctx.tenant.id, tenantUserId: user.id, displayName: input.displayName, bio: input.bio ?? null } as any)
           .returning();
         // Seed default Mon–Fri 9–5 availability rules
         await tx.insert(availabilityRules).values(
@@ -163,7 +163,7 @@ export const staffRouter = router({
 
       const [updated] = await ctx.db
         .update(staff)
-        .set({ ...fields, updatedAt: new Date() })
+        .set({ ...fields, updatedAt: new Date() } as any)
         .where(and(eq(staff.id, id), eq(staff.tenantId, ctx.tenant.id)))
         .returning();
 
@@ -203,7 +203,7 @@ export const staffRouter = router({
 
       const [updated] = await ctx.db
         .update(staff)
-        .set({ isActive: false, updatedAt: new Date() })
+        .set({ isActive: false, updatedAt: new Date() } as any)
         .where(and(eq(staff.id, input.id), eq(staff.tenantId, ctx.tenant.id)))
         .returning();
 
@@ -280,7 +280,7 @@ export const staffRouter = router({
 
       const [updated] = await ctx.db
         .update(tenantUsers)
-        .set({ role: input.role, updatedAt: new Date() })
+        .set({ role: input.role, updatedAt: new Date() } as any)
         .where(
           and(
             eq(tenantUsers.id, input.userId),

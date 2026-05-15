@@ -31,17 +31,13 @@ export const tenantStatusEnum = pgEnum("tenant_status", [
 
 /**
  * Each row is a business client (tenant).
- * The `clerk_org_id` is the Clerk Organization ID — this is the authoritative
- * tenant identifier used to derive context from auth tokens.
- * NEVER accept tenant_id from client input; always derive from clerk_org_id.
+ * Tenant context is derived from the `active-tenant` cookie (set at login
+ * and at workspace-switch). NEVER accept tenantId from client input.
  */
 export const tenants = pgTable(
   "tenants",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-
-    // Clerk org ID — source of truth for tenant identity
-    clerkOrgId: text("clerk_org_id").notNull(),
 
     // Human-readable identifiers
     name: text("name").notNull(),
@@ -74,7 +70,6 @@ export const tenants = pgTable(
       .default(sql`now()`),
   },
   (t) => [
-    uniqueIndex("tenants_clerk_org_id_idx").on(t.clerkOrgId),
     uniqueIndex("tenants_slug_idx").on(t.slug),
     index("tenants_status_idx").on(t.status),
   ]

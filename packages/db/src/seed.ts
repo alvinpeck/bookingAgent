@@ -26,7 +26,6 @@ async function seed() {
   const [acmeTenant] = await db
     .insert(schema.tenants)
     .values({
-      clerkOrgId: "org_seed_acme_001",
       name: "Acme Barbershop",
       slug: "acme-barbershop",
       plan: "starter",
@@ -40,7 +39,6 @@ async function seed() {
   const [growthTenant] = await db
     .insert(schema.tenants)
     .values({
-      clerkOrgId: "org_seed_growth_001",
       name: "Elite Wellness Studio",
       slug: "elite-wellness",
       plan: "growth",
@@ -65,11 +63,12 @@ async function seed() {
     .insert(schema.tenantUsers)
     .values({
       tenantId: acmeTenant.id,
-      clerkUserId: "user_seed_owner_001",
+      userId: "user_seed_owner_001",
       email: "owner@acme-barbershop.example.com",
       firstName: "Alex",
       lastName: "Owner",
       role: "owner",
+      isActive: true,
     })
     .returning();
 
@@ -77,11 +76,12 @@ async function seed() {
     .insert(schema.tenantUsers)
     .values({
       tenantId: acmeTenant.id,
-      clerkUserId: "user_seed_staff_001",
+      userId: "user_seed_staff_001",
       email: "barber@acme-barbershop.example.com",
       firstName: "Jordan",
       lastName: "Barber",
       role: "staff",
+      isActive: true,
     })
     .returning();
 

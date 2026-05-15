@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc/client";
 
@@ -81,7 +81,21 @@ export default function AuditPage() {
     { placeholderData: keepPreviousData }
   );
 
-  const logs = query.data?.data ?? [];
+  type AuditLog = {
+    id: string;
+    action: string;
+    actorId: string;
+    actorEmail: string;
+    actorRole: string;
+    resourceType: string | null;
+    resourceId: string | null;
+    ipAddress: string | null;
+    createdAt: string | Date;
+    before: unknown;
+    after: unknown;
+    metadata: unknown;
+  };
+  const logs = (query.data?.data ?? []) as AuditLog[];
   const total = query.data?.total ?? 0;
   const from = (page - 1) * PAGE_SIZE + 1;
   const to = Math.min(page * PAGE_SIZE, total);
@@ -175,10 +189,9 @@ export default function AuditPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {logs.map((log) => (
-                <>
+                <React.Fragment key={log.id as string}>
                   <tr
-                    key={log.id}
-                    onClick={() => setExpandedId(expandedId === log.id ? null : log.id)}
+                    onClick={() => setExpandedId(expandedId === (log.id as string) ? null : (log.id as string))}
                     className="cursor-pointer hover:bg-gray-50 transition-colors"
                   >
                     <td className="px-4 py-3 font-mono text-xs text-gray-400 whitespace-nowrap w-44">
@@ -199,8 +212,8 @@ export default function AuditPage() {
                     <td className="px-4 py-3 text-xs text-gray-400">{log.ipAddress ?? "—"}</td>
                   </tr>
 
-                  {expandedId === log.id && (
-                    <tr key={`${log.id}-detail`} className="bg-gray-50">
+                  {expandedId === (log.id as string) && (
+                    <tr key={`${log.id as string}-detail`} className="bg-gray-50">
                       <td colSpan={5} className="px-4 pb-4 pt-2">
                         <pre className="bg-white border border-gray-200 rounded-lg p-4 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap">
                           {JSON.stringify(
@@ -212,7 +225,7 @@ export default function AuditPage() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
             </tbody>
           </table>

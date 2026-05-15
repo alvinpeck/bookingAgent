@@ -1,9 +1,47 @@
 "use client";
 
 import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc/client";
+
+// ─── Enter Portal button ──────────────────────────────────────────────────────
+
+function EnterPortalButton({ tenantId }: { tenantId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  async function handleEnter() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/enter-portal", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ tenantId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert((err as any).error ?? "Failed to enter portal");
+        return;
+      }
+      router.push("/dashboard");
+    } catch {
+      alert("Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleEnter}
+      disabled={busy}
+      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:text-indigo-400 text-white text-sm font-medium rounded-lg transition-colors"
+    >
+      {busy ? "Opening…" : "Enter Portal →"}
+    </button>
+  );
+}
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
 
@@ -72,7 +110,7 @@ function fmtDateTime(d: Date | string | null | undefined) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TenantDetailPage() {
-  const params = useParams<{ tenantId: string }>();
+  const params   = useParams<{ tenantId: string }>();
   const tenantId = params.tenantId;
 
   const utils = trpc.useUtils();
@@ -95,14 +133,18 @@ export default function TenantDetailPage() {
 
   // Invite member
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"org:admin" | "org:member">("org:member");
+  const [inviteRole, setInviteRole] = useState<"owner" | "admin" | "staff" | "readonly">("staff");
   const [inviteMsg, setInviteMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
 
   const inviteMember = trpc.admin.inviteMember.useMutation({
     onSuccess: (data) => {
       setInviteEmail("");
-      setInviteMsg({ type: "success", text: `Invitation sent to ${data.email}` });
-      setTimeout(() => setInviteMsg(null), 5000);
+      setInviteLink(data.inviteUrl);
+      setInviteMsg({
+        type: "success",
+        text: data.email ? `Invite link generated for ${data.email}` : "Invite link generated.",
+      });
     },
     onError: (err) => {
       setInviteMsg({ type: "error", text: err.message });
@@ -201,6 +243,7 @@ export default function TenantDetailPage() {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <EnterPortalButton tenantId={tenant.id} />
             <span
               className={`px-2 py-0.5 rounded text-xs font-semibold capitalize ${
                 PLAN_BADGE[tenant.plan as Plan] ?? "bg-gray-700 text-gray-200"
@@ -314,13 +357,13 @@ export default function TenantDetailPage() {
 
       {/* ── Section 4: Invite Member ── */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl px-6 py-5">
-        <h2 className="text-sm font-semibold text-white mb-4">Invite Member</h2>
+        <h2 className="text-sm font-semibold text-white mb-1">Invite Member</h2>
         <p className="text-xs text-slate-400 mb-4">
-          Send an invitation email so a user can join this workspace. They will receive an email with a link to sign up or sign in.
+          Generate a secure invite link to share with the user. Email is optional — leave it blank to create a generic link.
         </p>
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-slate-400">Email address</label>
+            <label className="text-xs text-slate-400">Email <span className="text-slate-600">(optional)</span></label>
             <input
               type="email"
               value={inviteEmail}
@@ -333,25 +376,47 @@ export default function TenantDetailPage() {
             <label className="text-xs text-slate-400">Role</label>
             <select
               value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as "org:admin" | "org:member")}
+              onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}
               className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="org:member">User (limited access)</option>
-              <option value="org:admin">Admin (full access)</option>
+              <option value="staff">Staff (limited access)</option>
+              <option value="admin">Admin (full access)</option>
+              <option value="owner">Owner</option>
+              <option value="readonly">Read-only</option>
             </select>
           </div>
           <button
-            onClick={() => inviteMember.mutate({ tenantId, email: inviteEmail, role: inviteRole })}
-            disabled={inviteMember.isPending || !inviteEmail}
+            onClick={() => inviteMember.mutate({
+              tenantId,
+              ...(inviteEmail ? { email: inviteEmail } : {}),
+              role: inviteRole,
+            })}
+            disabled={inviteMember.isPending}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:text-indigo-400 text-white text-sm rounded-lg transition-colors"
           >
-            {inviteMember.isPending ? "Sending…" : "Send Invitation"}
+            {inviteMember.isPending ? "Generating…" : "Generate Invite Link"}
           </button>
         </div>
+
         {inviteMsg && (
           <p className={`mt-3 text-xs ${inviteMsg.type === "success" ? "text-green-400" : "text-red-400"}`}>
             {inviteMsg.text}
           </p>
+        )}
+
+        {inviteLink && (
+          <div className="mt-3 p-3 bg-slate-800 border border-slate-700 rounded-lg space-y-2">
+            <p className="text-xs text-slate-400">Share this link with the user — expires in 7 days:</p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-xs text-indigo-300 break-all">{inviteLink}</code>
+              <button
+                onClick={() => navigator.clipboard.writeText(inviteLink)}
+                className="shrink-0 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded transition-colors"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -483,10 +548,10 @@ export default function TenantDetailPage() {
                       <p className="text-xs text-slate-500">{b.customerEmail}</p>
                     </td>
                     <td className="px-4 py-3 text-slate-300">
-                      {b.serviceName ?? "—"}
+                      {(b as any).service?.name ?? "—"}
                     </td>
                     <td className="px-4 py-3 text-slate-400">
-                      {b.staffDisplayName ?? "—"}
+                      {(b as any).staff?.displayName ?? "—"}
                     </td>
                     <td className="px-4 py-3">
                       <span

@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "crypto";
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { auth } from "@/auth";
+import { cookies } from "next/headers";
 import { eq, and } from "drizzle-orm";
 import { db, staff, tenants, tenantUsers } from "@booking-agent/db";
 
@@ -19,10 +20,15 @@ const SCOPES = [
  * callback can safely associate the tokens with the correct staff record.
  */
 export async function GET() {
-  const { userId, orgId } = await auth();
-  if (!userId || !orgId) {
+  const session = await auth();
+  const cookieStore = await cookies();
+  const activeTenantId = cookieStore.get("active-tenant")?.value;
+
+  if (!session?.user?.id || !activeTenantId) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
+
+  const userId = session.user.id;
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -30,14 +36,17 @@ export async function GET() {
 
   if (!clientId || !redirectUri || !encryptionKey) {
     return NextResponse.json(
-      { error: "Google OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI." },
+      {
+        error:
+          "Google OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI.",
+      },
       { status: 500 }
     );
   }
 
   // Resolve the tenant + staff record for this user
   const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.clerkOrgId, orgId),
+    where: eq(tenants.id, activeTenantId),
     columns: { id: true },
   });
   if (!tenant) {
@@ -47,7 +56,7 @@ export async function GET() {
   const tenantUser = await db.query.tenantUsers.findFirst({
     where: and(
       eq(tenantUsers.tenantId, tenant.id),
-      eq(tenantUsers.clerkUserId, userId)
+      eq(tenantUsers.userId, userId)
     ),
     columns: { id: true },
   });

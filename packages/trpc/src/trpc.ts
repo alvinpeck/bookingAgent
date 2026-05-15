@@ -56,7 +56,7 @@ const isAuthenticated = middleware(({ ctx, next }) => {
 });
 
 /**
- * Protected procedure — requires valid Clerk session + active tenant membership.
+ * Protected procedure — requires a valid NextAuth session + active tenant membership.
  * All back-office routes should use this or a more-specific variant below.
  */
 export const protectedProcedure = t.procedure.use(isAuthenticated);
@@ -158,7 +158,7 @@ async function createAuditEntry({
     await ctx.db.insert(auditLogs).values({
       tenantId: ctx.tenant.id,
       action,
-      actorId: `user:${ctx.tenantUser.clerkUserId}`,
+      actorId: `user:${ctx.tenantUser.userId}`,
       actorEmail: ctx.tenantUser.email,
       actorRole: ctx.tenantUser.role,
       resourceType: resourceType ?? null,
@@ -169,7 +169,7 @@ async function createAuditEntry({
       ipAddress: ctx.ipAddress,
       userAgent: ctx.userAgent,
       requestId: ctx.requestId,
-    });
+    } as any);
   } catch (err) {
     // Audit log failure must NEVER crash the main operation
     console.error("[audit] Failed to write audit log:", err);

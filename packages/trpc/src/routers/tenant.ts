@@ -1,20 +1,34 @@
 import { z } from "zod";
-import { eq, and, like } from "drizzle-orm";
+import { eq, and, like, isNull, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { randomBytes } from "crypto";
 import {
   router,
   protectedProcedure,
   manageIntegrationsProcedure,
-  manageBillingProcedure,
+  manageStaffProcedure,
   withAudit,
 } from "../trpc";
-import { tenants, tenantSettings, PLAN_QUOTAS } from "@booking-agent/db";
+import {
+  tenants,
+  tenantSettings,
+  tenantUsers,
+  tenantInvites,
+  PLAN_QUOTAS,
+} from "@booking-agent/db";
 import { encrypt, decrypt } from "../lib/crypto";
+import { sendInviteEmail } from "../lib/email";
 
 // Keys that can be stored per-tenant — extend this list as new services are added
 export const API_KEY_SERVICES = [
+  // ── Paid AI providers ──────────────────────────────────────────────────────
   { key: "anthropic",    label: "Anthropic (Claude AI)",      hint: "sk-ant-..." },
   { key: "openai",       label: "OpenAI (GPT)",               hint: "sk-..." },
+  // ── Free AI providers ─────────────────────────────────────────────────────
+  { key: "groq",         label: "Groq (free — Llama 3.3 70B)", hint: "gsk_..." },
+  { key: "gemini",       label: "Google Gemini (free tier)",  hint: "AIza..." },
+  { key: "ollama_url",   label: "Ollama (self-hosted, free)", hint: "http://localhost:11434/api" },
+  // ── Other services ────────────────────────────────────────────────────────
   { key: "sendgrid",     label: "SendGrid (email)",           hint: "SG...." },
   { key: "twilio_sid",   label: "Twilio Account SID",         hint: "AC..." },
   { key: "twilio_auth",  label: "Twilio Auth Token",          hint: "" },
@@ -67,7 +81,7 @@ export const tenantRouter = router({
 
       const [updated] = await ctx.db
         .update(tenants)
-        .set({ ...input, updatedAt: new Date() })
+        .set({ ...input, updatedAt: new Date() } as any)
         .where(eq(tenants.id, ctx.tenant.id))
         .returning();
 
@@ -111,13 +125,13 @@ export const tenantRouter = router({
           tenantId: ctx.tenant.id,
           key: input.key,
           value: input.value as Record<string, unknown>,
-        })
+        } as any)
         .onConflictDoUpdate({
           target: [tenantSettings.tenantId, tenantSettings.key],
           set: {
             value: input.value as Record<string, unknown>,
             updatedAt: new Date(),
-          },
+          } as any,
         });
 
       await ctx.audit("tenant.settings_updated", {
@@ -178,7 +192,7 @@ export const tenantRouter = router({
           tenantId: ctx.tenant.id,
           key: settingKey,
           value: encryptedValue as unknown as Record<string, unknown>,
-        })
+        } as any)
         .onConflictDoUpdate({
           target: [tenantSettings.tenantId, tenantSettings.key],
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -254,5 +268,226 @@ export const tenantRouter = router({
       } catch {
         return null;
       }
+    }),
+
+  // ─── Team / member management ─────────────────────────────────────────────
+
+  /**
+   * List all active members of the current workspace.
+   */
+  listMembers: protectedProcedure.query(async ({ ctx }) => {
+    return ctx.db.query.tenantUsers.findMany({
+      where: and(
+        eq(tenantUsers.tenantId, ctx.tenant.id),
+        eq(tenantUsers.isActive, true),
+      ),
+      orderBy: (tu, { asc }) => asc(tu.createdAt),
+    });
+  }),
+
+  /**
+   * List pending (not yet accepted, not expired) invites.
+   */
+  listPendingInvites: manageStaffProcedure.query(async ({ ctx }) => {
+    const now = new Date();
+    const all = await ctx.db.query.tenantInvites.findMany({
+      where: and(
+        eq(tenantInvites.tenantId, ctx.tenant.id),
+        isNull(tenantInvites.acceptedAt),
+      ),
+      orderBy: (ti, { desc: d }) => d(ti.createdAt),
+    });
+    // Filter out expired ones in JS (simpler than a Drizzle gt() on a date)
+    return all.filter((inv) => inv.expiresAt > now);
+  }),
+
+  /**
+   * Invite a new member to the workspace. Sends invite email if RESEND_API_KEY is set.
+   * Requires manageStaff permission (owner or admin).
+   */
+  inviteMember: manageStaffProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        email: z.string().email(),
+        role:  z.enum(["admin", "staff", "readonly"]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const email = input.email.toLowerCase().trim();
+
+      // Check quota — owners can't exceed their plan's staff seat limit
+      const quota = PLAN_QUOTAS[ctx.tenant.plan];
+      if (quota.maxStaffSeats !== Infinity) {
+        const currentCount = await ctx.db.query.tenantUsers.findMany({
+          where: and(
+            eq(tenantUsers.tenantId, ctx.tenant.id),
+            eq(tenantUsers.isActive, true),
+          ),
+          columns: { id: true },
+        });
+        if (currentCount.length >= quota.maxStaffSeats) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: `Your plan allows a maximum of ${quota.maxStaffSeats} staff seats. Upgrade to add more.`,
+          });
+        }
+      }
+
+      // Delete any stale pending invite for this email+tenant
+      await ctx.db
+        .delete(tenantInvites)
+        .where(and(
+          eq(tenantInvites.tenantId, ctx.tenant.id),
+          eq(tenantInvites.email, email),
+          isNull(tenantInvites.acceptedAt),
+        ));
+
+      const token     = randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+      const [invite] = await ctx.db
+        .insert(tenantInvites)
+        .values({
+          tenantId:  ctx.tenant.id,
+          email,
+          role:      input.role,
+          token,
+          expiresAt,
+          invitedBy: ctx.tenantUser.userId,
+        } as any)
+        .returning();
+
+      const base      = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+      const inviteUrl = `${base}/invite/${token}`;
+
+      // Fire-and-forget email
+      await sendInviteEmail({
+        email,
+        tenantName:   ctx.tenant.name,
+        inviteUrl,
+        role:         input.role,
+        inviterEmail: ctx.tenantUser.email,
+      });
+
+      await ctx.audit("user.invited", {
+        resourceType: "tenant_invite",
+        resourceId:   invite!.id,
+        after:        { email, role: input.role },
+      });
+
+      return { inviteUrl, expiresAt };
+    }),
+
+  /**
+   * Revoke a pending invite.
+   */
+  revokeInvite: manageStaffProcedure
+    .input(z.object({ inviteId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const invite = await ctx.db.query.tenantInvites.findFirst({
+        where: and(
+          eq(tenantInvites.id, input.inviteId),
+          eq(tenantInvites.tenantId, ctx.tenant.id),
+          isNull(tenantInvites.acceptedAt),
+        ),
+      });
+      if (!invite) throw new TRPCError({ code: "NOT_FOUND" });
+
+      await ctx.db
+        .delete(tenantInvites)
+        .where(eq(tenantInvites.id, input.inviteId));
+
+      return { success: true };
+    }),
+
+  /**
+   * Update a member's role. Owner cannot demote themselves.
+   */
+  updateMemberRole: manageStaffProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        tenantUserId: z.string().uuid(),
+        role:         z.enum(["owner", "admin", "staff", "readonly"]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Can't change your own role
+      if (input.tenantUserId === ctx.tenantUser.id) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot change your own role." });
+      }
+
+      const member = await ctx.db.query.tenantUsers.findFirst({
+        where: and(
+          eq(tenantUsers.id, input.tenantUserId),
+          eq(tenantUsers.tenantId, ctx.tenant.id),
+          eq(tenantUsers.isActive, true),
+        ),
+      });
+      if (!member) throw new TRPCError({ code: "NOT_FOUND" });
+
+      // Only owners can promote to owner or demote other owners
+      if (
+        (input.role === "owner" || member.role === "owner") &&
+        ctx.tenantUser.role !== "owner"
+      ) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can manage owner-level roles." });
+      }
+
+      const [updated] = await ctx.db
+        .update(tenantUsers)
+        .set({ role: input.role } as any)
+        .where(eq(tenantUsers.id, input.tenantUserId))
+        .returning();
+
+      await ctx.audit("user.role_changed", {
+        resourceType: "tenant_user",
+        resourceId:   input.tenantUserId,
+        before:       { role: member.role },
+        after:        { role: input.role },
+      });
+
+      return updated;
+    }),
+
+  /**
+   * Remove a member from the workspace (soft deactivate).
+   */
+  removeMember: manageStaffProcedure
+    .use(withAudit)
+    .input(z.object({ tenantUserId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      // Can't remove yourself
+      if (input.tenantUserId === ctx.tenantUser.id) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove yourself from the workspace." });
+      }
+
+      const member = await ctx.db.query.tenantUsers.findFirst({
+        where: and(
+          eq(tenantUsers.id, input.tenantUserId),
+          eq(tenantUsers.tenantId, ctx.tenant.id),
+          eq(tenantUsers.isActive, true),
+        ),
+      });
+      if (!member) throw new TRPCError({ code: "NOT_FOUND" });
+
+      // Only owners can remove other owners
+      if (member.role === "owner" && ctx.tenantUser.role !== "owner") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can remove other owners." });
+      }
+
+      await ctx.db
+        .update(tenantUsers)
+        .set({ isActive: false } as any)
+        .where(eq(tenantUsers.id, input.tenantUserId));
+
+      await ctx.audit("user.removed", {
+        resourceType: "tenant_user",
+        resourceId:   input.tenantUserId,
+        after:        { isActive: false },
+      });
+
+      return { success: true };
     }),
 });

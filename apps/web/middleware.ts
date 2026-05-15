@@ -1,61 +1,76 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+/**
+ * Middleware — runs on Edge runtime.
+ * Uses its OWN NextAuth instance built from the Edge-safe authConfig.
+ * NEVER imports from auth.ts (which pulls in DrizzleAdapter / Node.js code).
+ */
+import NextAuth from "next-auth";
+import { authConfig } from "@/auth.config";
 
-// ─── Route matchers ───────────────────────────────────────────────────────────
+const { auth } = NextAuth(authConfig);
 
-// Back-office routes that require authentication
-const isBackOfficeRoute = createRouteMatcher([
-  "/dashboard(.*)",
-  "/bookings(.*)",
-  "/services(.*)",
-  "/availability(.*)",
-  "/staff(.*)",
-  "/integrations(.*)",
-  "/channels(.*)",
-  "/settings(.*)",
-  "/audit(.*)",
-]);
+const BACK_OFFICE_PATHS = [
+  "/dashboard",
+  "/bookings",
+  "/services",
+  "/availability",
+  "/staff",
+  "/integrations",
+  "/channels",
+  "/settings",
+  "/audit",
+  "/usage",
+  "/billing",
+];
 
-// Public booking site routes (no auth required)
-const isPublicBookingRoute = createRouteMatcher([
-  "/book(.*)",
-  "/api/trpc(.*)", // tRPC handles its own auth internally
-  "/api/webhooks(.*)",
-  "/api/integrations/google/callback",
-]);
+function isBackOffice(pathname: string) {
+  return BACK_OFFICE_PATHS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/")
+  );
+}
 
-// ─── Middleware ───────────────────────────────────────────────────────────────
+function isPublic(pathname: string) {
+  return (
+    pathname.startsWith("/book") ||
+    pathname.startsWith("/api/trpc") ||
+    pathname.startsWith("/api/webhooks") ||
+    pathname.startsWith("/api/integrations/google/callback") ||
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/sign-in") ||
+    pathname.startsWith("/sign-out") ||
+    pathname.startsWith("/forgot-password") ||
+    pathname.startsWith("/reset-password") ||
+    pathname.startsWith("/invite") ||
+    pathname.startsWith("/admin") ||
+    pathname.startsWith("/onboarding") ||
+    pathname === "/"
+  );
+}
 
-export default clerkMiddleware(async (auth, req: NextRequest) => {
-  // Allow public booking and webhook routes through
-  if (isPublicBookingRoute(req)) {
-    return NextResponse.next();
-  }
+export default auth((req) => {
+  const { pathname } = req.nextUrl;
 
-  // Protect all back-office routes
-  if (isBackOfficeRoute(req)) {
-    const { userId, orgId } = await auth();
+  if (isPublic(pathname)) return; // let through
 
-    if (!userId) {
-      // Redirect to sign-in, preserving the intended destination
-      const signInUrl = new URL("/sign-in", req.url);
-      signInUrl.searchParams.set("redirect_url", req.url);
-      return NextResponse.redirect(signInUrl);
+  if (isBackOffice(pathname)) {
+    if (!req.auth?.user) {
+      // Use nextUrl.clone() to avoid new URL() Edge runtime issues
+      const url = req.nextUrl.clone();
+      url.pathname = "/sign-in";
+      url.searchParams.set("callbackUrl", req.nextUrl.href);
+      return Response.redirect(url);
     }
 
-    // Require an active org to be selected (tenant context)
-    if (!orgId) {
-      return NextResponse.redirect(new URL("/onboarding", req.url));
+    const activeTenant = req.cookies.get("active-tenant")?.value;
+    if (!activeTenant) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/onboarding";
+      return Response.redirect(url);
     }
   }
-
-  return NextResponse.next();
 });
 
 export const config = {
   matcher: [
-    // Match all routes except Next.js internals and static files
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
     "/(api|trpc)(.*)",
   ],

@@ -3,7 +3,6 @@ import {
   pgEnum,
   text,
   timestamp,
-  integer,
   jsonb,
   uuid,
   index,
@@ -77,7 +76,7 @@ export const auditLogs = pgTable(
     action: auditActionEnum("action").notNull(),
 
     // Who performed the action
-    // Format: "user:<clerkUserId>", "system", "ai_agent", "webhook:<source>"
+    // Format: "user:<userId>", "system", "ai_agent", "webhook:<source>"
     actorId: text("actor_id").notNull(),
     actorEmail: text("actor_email"),
     actorRole: text("actor_role"),
@@ -111,45 +110,3 @@ export const auditLogs = pgTable(
   ]
 );
 
-// ─── Usage Metering ───────────────────────────────────────────────────────────
-
-export const usageMeteringEnum = pgEnum("usage_metric", [
-  "bookings",
-  "ai_tokens",
-  "whatsapp_messages",
-  "telegram_messages",
-  "email_reminders",
-  "sms_reminders",
-  "staff_seats",
-]);
-
-/**
- * Monthly usage counters per tenant per metric.
- * Incremented via atomic UPDATE ... SET count = count + N.
- * Used for quota enforcement (Phase 11).
- */
-export const usageMetering = pgTable(
-  "usage_metering",
-  {
-    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid("tenant_id")
-      .notNull()
-      .references(() => tenants.id, { onDelete: "cascade" }),
-
-    metric: usageMeteringEnum("metric").notNull(),
-
-    // Billing period (YYYY-MM format, e.g. "2025-03")
-    periodMonth: text("period_month").notNull(),
-
-    count: integer("count").notNull().default(0),
-
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .default(sql`now()`),
-  },
-  (t) => [
-    index("usage_metering_tenant_idx").on(t.tenantId),
-    // One row per tenant per metric per month
-    // Upserted via INSERT ... ON CONFLICT DO UPDATE
-  ]
-);

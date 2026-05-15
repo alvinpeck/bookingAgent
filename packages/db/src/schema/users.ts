@@ -23,10 +23,8 @@ export const userRoleEnum = pgEnum("user_role", [
 // ─── Tenant Users ─────────────────────────────────────────────────────────────
 
 /**
- * Maps a Clerk user (clerkUserId) to a tenant with a specific role.
- * A single Clerk user can be a member of multiple tenants (orgs).
- *
- * Populated via Clerk webhook: organizationMembership.created / .deleted
+ * Maps an Auth.js user (userId) to a tenant with a specific role.
+ * A single user can be a member of multiple tenants.
  */
 export const tenantUsers = pgTable(
   "tenant_users",
@@ -36,10 +34,10 @@ export const tenantUsers = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
 
-    // Clerk user ID — authoritative identity
-    clerkUserId: text("clerk_user_id").notNull(),
+    // Auth.js user ID — references users.id from auth-schema
+    userId: text("user_id").notNull(),
 
-    // Denormalised from Clerk for display; re-synced on webhook events
+    // Denormalised for display
     email: text("email").notNull(),
     firstName: text("first_name"),
     lastName: text("last_name"),
@@ -63,9 +61,9 @@ export const tenantUsers = pgTable(
       .default(sql`now()`),
   },
   (t) => [
-    // A Clerk user can only have one role per tenant
-    uniqueIndex("tenant_users_tenant_clerk_idx").on(t.tenantId, t.clerkUserId),
-    index("tenant_users_clerk_user_idx").on(t.clerkUserId),
+    // A user can only have one role per tenant
+    uniqueIndex("tenant_users_tenant_user_idx").on(t.tenantId, t.userId),
+    index("tenant_users_user_idx").on(t.userId),
     index("tenant_users_tenant_idx").on(t.tenantId),
   ]
 );

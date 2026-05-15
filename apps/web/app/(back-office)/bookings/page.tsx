@@ -65,7 +65,21 @@ export default function BookingsPage() {
     ...(to              ? { to }                      : {}),
   });
 
-  const bookings = data?.data ?? [];
+  type BookingRow = {
+    id: string;
+    status: Status;
+    channel: Channel;
+    startsAt: string;
+    endsAt: string;
+    customerName: string;
+    customerEmail: string;
+    customerPhone: string | null;
+    notes: string | null;
+    internalNote: string | null;
+    service: { id: string; name: string; colorHex: string; durationMinutes: number };
+    staff: { id: string; displayName: string } | null;
+  };
+  const bookings = (data?.data ?? []) as BookingRow[];
   const total    = data?.total ?? 0;
   const from_n   = (page - 1) * PAGE_SIZE + 1;
   const to_n     = Math.min(page * PAGE_SIZE, total);

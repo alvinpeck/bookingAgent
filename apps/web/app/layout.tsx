@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ClerkProvider } from "@clerk/nextjs";
+import { SessionProvider } from "next-auth/react";
 import { TRPCProvider } from "@/lib/trpc/provider";
 import "./globals.css";
 
@@ -8,18 +8,14 @@ export const metadata: Metadata = {
   description: "Multi-tenant AI-powered booking platform",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkProvider>
-      <html lang="en">
-        <body>
+    <html lang="en">
+      <body>
+        <SessionProvider>
           <TRPCProvider>{children}</TRPCProvider>
-        </body>
-      </html>
-    </ClerkProvider>
+        </SessionProvider>
+      </body>
+    </html>
   );
 }

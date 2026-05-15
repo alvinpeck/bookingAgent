@@ -14,6 +14,7 @@
     "db:generate": "turbo db:generate",
     "db:migrate": "turbo db:migrate",
     "db:seed": "turbo db:seed",
+    "db:create-admin": "cd packages/db && npx tsx src/create-admin.ts",
     "db:studio": "cd packages/db && drizzle-kit studio"
   },
   "devDependencies": {
@@ -27,5 +28,10 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "overrides": {
+      "drizzle-orm": "0.38.4"
+    }
+  }
 }

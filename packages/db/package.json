@@ -9,6 +9,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/seed.ts",
+    "db:create-admin": "tsx src/create-admin.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

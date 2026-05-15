@@ -1,6 +1,8 @@
 import { generateText, tool, stepCountIs, jsonSchema } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 import { z } from "zod";
 import { eq, and, notInArray } from "drizzle-orm";
 import {
@@ -104,11 +106,18 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
   });
 
   const anthropicRow = allSettings.find((r) => r.key === "apikey:anthropic");
-  const openaiRow = allSettings.find((r) => r.key === "apikey:openai");
+  const openaiRow    = allSettings.find((r) => r.key === "apikey:openai");
+  const groqRow      = allSettings.find((r) => r.key === "apikey:groq");
+  const geminiRow    = allSettings.find((r) => r.key === "apikey:gemini");
+  const ollamaRow    = allSettings.find((r) => r.key === "apikey:ollama_url");
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let model: any;
 
+  /**
+   * Provider priority: Anthropic → OpenAI → Groq → Gemini → Ollama
+   * The first configured key wins.
+   */
   if (anthropicRow?.value) {
     let apiKey: string;
     try {
@@ -137,6 +146,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
         return globalThis.fetch(url, init);
       },
     })("claude-haiku-4-5-20251001");
+
   } else if (openaiRow?.value) {
     let apiKey: string;
     try {
@@ -146,6 +156,46 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       return "Sorry, there was a configuration error. Please contact support.";
     }
     model = createOpenAI({ apiKey })("gpt-4o-mini");
+
+  } else if (groqRow?.value) {
+    // ── Groq (free tier: llama-3.3-70b-versatile, ~14 400 req/day) ──────────
+    let apiKey: string;
+    try {
+      apiKey = decrypt(groqRow.value as string);
+    } catch {
+      logger.error("[agent] Failed to decrypt Groq API key", { tenantId });
+      return "Sorry, there was a configuration error. Please contact support.";
+    }
+    // llama-3.3-70b-versatile has reliable tool-calling support
+    model = createGroq({ apiKey })("llama-3.3-70b-versatile");
+
+  } else if (geminiRow?.value) {
+    // ── Google Gemini (free tier: 1 500 req/day on gemini-1.5-flash) ─────────
+    let apiKey: string;
+    try {
+      apiKey = decrypt(geminiRow.value as string);
+    } catch {
+      logger.error("[agent] Failed to decrypt Gemini API key", { tenantId });
+      return "Sorry, there was a configuration error. Please contact support.";
+    }
+    model = createGoogleGenerativeAI({ apiKey })("gemini-1.5-flash");
+
+  } else if (ollamaRow?.value) {
+    // ── Ollama (self-hosted, completely free) ─────────────────────────────────
+    // Store the base URL as the "key", e.g. http://localhost:11434/api
+    let baseURL: string;
+    try {
+      baseURL = decrypt(ollamaRow.value as string);
+    } catch {
+      logger.error("[agent] Failed to decrypt Ollama URL", { tenantId });
+      return "Sorry, there was a configuration error. Please contact support.";
+    }
+    // Ollama exposes an OpenAI-compatible endpoint — use llama3.1 for tool support
+    model = createOpenAI({
+      baseURL: baseURL.replace(/\/$/, "") + "/v1",
+      apiKey:  "ollama", // Ollama doesn't require a real key
+    })("llama3.1");
+
   } else {
     return "This booking service is not yet configured. Please contact the business directly.";
   }
@@ -167,7 +217,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
   const agentTools = {
     listServices: tool({
       description: "List all active services available for booking.",
-      parameters: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+      inputSchema: z.object({}),
       execute: async () => {
         const rows = await db.query.services.findMany({
           where: and(
@@ -189,7 +239,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
 
     checkAvailability: tool({
       description: "Check available time slots for a service on a given date.",
-      parameters: jsonSchema<{ serviceId: string; date: string }>({
+      inputSchema: jsonSchema<{ serviceId: string; date: string }>({
         type: "object",
         properties: {
           serviceId: { type: "string", description: "The service ID" },
@@ -305,7 +355,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
 
     createBooking: tool({
       description: "Create a confirmed booking after collecting all details and user confirmation.",
-      parameters: jsonSchema<{ serviceId: string; startsAt: string; customerName: string; customerPhone: string; customerEmail: string; notes?: string }>({
+      inputSchema: jsonSchema<{ serviceId: string; startsAt: string; customerName: string; customerPhone: string; customerEmail: string; notes?: string }>({
         type: "object",
         properties: {
           serviceId: { type: "string" },
@@ -432,7 +482,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
 
     findBookings: tool({
       description: "Find recent bookings for a customer by phone or email.",
-      parameters: jsonSchema<{ phone?: string; email?: string }>({
+      inputSchema: jsonSchema<{ phone?: string; email?: string }>({
         type: "object",
         properties: {
           phone: { type: "string", description: "Customer phone number" },
@@ -491,7 +541,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
 
     cancelBooking: tool({
       description: "Cancel a booking by ID after verifying the customer phone number.",
-      parameters: jsonSchema<{ bookingId: string; customerPhone: string }>({
+      inputSchema: jsonSchema<{ bookingId: string; customerPhone: string }>({
         type: "object",
         properties: {
           bookingId: { type: "string", description: "The booking ID to cancel" },

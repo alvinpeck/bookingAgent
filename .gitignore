@@ -1,0 +1,59 @@
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ─── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+*.pem
+
+# ─── Next.js ──────────────────────────────────────────────────────────────────
+.next/
+out/
+apps/web/.next/
+apps/web/out/
+
+# ─── Build outputs ────────────────────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
+
+# ─── Turbo ────────────────────────────────────────────────────────────────────
+.turbo/
+apps/web/.turbo/
+packages/**/.turbo/
+
+# ─── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+{apps/web/{app/
+{apps/.DS_Store
+{apps/web/.DS_Store
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Editor ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Testing ──────────────────────────────────────────────────────────────────
+coverage/
+
+# ─── DB local files ───────────────────────────────────────────────────────────
+packages/db/.env.local
+packages/db/pnpm-workspace.yaml
+packages/db/node_modules/
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.tgz
+.vercel

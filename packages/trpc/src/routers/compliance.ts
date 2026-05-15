@@ -46,13 +46,13 @@ async function upsertRetentionSetting(
 ): Promise<void> {
   await db
     .insert(tenantSettings)
-    .values({ tenantId, key, value: value as unknown as Record<string, unknown> })
+    .values({ tenantId, key, value: value as unknown as Record<string, unknown> } as any)
     .onConflictDoUpdate({
       target: [tenantSettings.tenantId, tenantSettings.key],
       set: {
         value: value as unknown as Record<string, unknown>,
         updatedAt: sql`now()`,
-      },
+      } as any,
     });
 }
 
@@ -171,7 +171,7 @@ export const complianceRouter = router({
         await db.insert(auditLogs).values({
           tenantId,
           action: "tenant.settings_updated" as const, // closest available enum value
-          actorId: `user:${ctx.tenantUser.clerkUserId}`,
+          actorId: `user:${ctx.tenantUser.userId}`,
           actorEmail: ctx.tenantUser.email,
           actorRole: ctx.tenantUser.role,
           resourceType: "external_user",
@@ -184,7 +184,7 @@ export const complianceRouter = router({
           ipAddress: ctx.ipAddress,
           userAgent: ctx.userAgent,
           requestId: ctx.requestId,
-        });
+        } as any);
       } catch (auditErr) {
         // Audit log failure must not abort the erasure
         console.error("[erasure] Audit log write failed:", auditErr);

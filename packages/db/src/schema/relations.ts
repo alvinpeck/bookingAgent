@@ -4,18 +4,53 @@ import { tenantUsers } from "./users";
 import { bookings, bookingStatusHistory } from "./bookings";
 import { channels, conversations } from "./channels";
 import { integrations } from "./integrations";
+import { users, accounts } from "./auth-schema";
+import { tenants } from "./tenants";
+import { tenantInvites } from "./invites";
 
-// staff → tenantUser (the back-office user who is this staff member)
-export const staffRelations = relations(staff, ({ one }) => ({
+// Auth.js users → accounts (one-to-many)
+export const usersRelations = relations(users, ({ many }) => ({
+  accounts: many(accounts),
+  tenantUsers: many(tenantUsers),
+}));
+
+// accounts → users (many-to-one)
+export const accountsRelations = relations(accounts, ({ one }) => ({
+  user: one(users, {
+    fields: [accounts.userId],
+    references: [users.id],
+  }),
+}));
+
+// staff → tenantUser (the back-office user who is this staff member) + integrations
+export const staffRelations = relations(staff, ({ one, many }) => ({
   tenantUser: one(tenantUsers, {
     fields: [staff.tenantUserId],
     references: [tenantUsers.id],
   }),
+  integrations: many(integrations),
 }));
 
-// tenantUsers → staff records (inverse)
-export const tenantUsersRelations = relations(tenantUsers, ({ many }) => ({
+// tenantUsers → staff records (inverse) + belongs to users
+export const tenantUsersRelations = relations(tenantUsers, ({ many, one }) => ({
   staffRecords: many(staff),
+  user: one(users, {
+    fields: [tenantUsers.userId],
+    references: [users.id],
+  }),
+}));
+
+// tenants → tenantInvites (one-to-many)
+export const tenantsRelations = relations(tenants, ({ many }) => ({
+  invites: many(tenantInvites),
+}));
+
+// tenantInvites → tenants (many-to-one)
+export const tenantInvitesRelations = relations(tenantInvites, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [tenantInvites.tenantId],
+    references: [tenants.id],
+  }),
 }));
 
 // services → serviceStaff assignments (one-to-many)
@@ -58,11 +93,6 @@ export const bookingStatusHistoryRelations = relations(
     }),
   })
 );
-
-// staff → integrations (one-to-many)
-export const staffIntegrationsRelations = relations(staff, ({ many }) => ({
-  integrations: many(integrations),
-}));
 
 // integrations → staff (many-to-one)
 export const integrationsRelations = relations(integrations, ({ one }) => ({

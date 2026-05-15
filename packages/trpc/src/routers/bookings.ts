@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, gte, lte, ilike, sql, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, ilike, sql, inArray, count } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   router,
@@ -15,6 +15,10 @@ import {
   bookingStatusEnum,
   bookingChannelEnum,
 } from "@booking-agent/db";
+import {
+  sendBookingConfirmation,
+  sendBookingCancellation,
+} from "../lib/email";
 
 // ─── Shared validators ────────────────────────────────────────────────────────
 
@@ -127,7 +131,7 @@ export const bookingsRouter = router({
       const booking = await createBookingTransaction({
         db: ctx.db,
         tenantId: ctx.tenant.id,
-        input,
+        input: input as any,
         channel: "back_office",
         holdToken: null,
       });
@@ -141,6 +145,11 @@ export const bookingsRouter = router({
       // Write to Google Calendar (best-effort, non-blocking)
       writeBookingToCalendar(ctx.db, booking, ctx.tenant.timezone ?? "UTC").catch(
         (err) => console.error("[gcal] write-back failed:", err)
+      );
+
+      // Send confirmation email (best-effort, non-blocking)
+      sendBookingConfirmationForBooking(ctx.db, booking, ctx.tenant).catch(
+        (err) => console.error("[email] confirmation failed:", err)
       );
 
       return booking;
@@ -195,14 +204,19 @@ export const bookingsRouter = router({
       const booking = await createBookingTransaction({
         db: ctx.db,
         tenantId: tenant.id,
-        input,
-        channel: input.channel,
-        holdToken: input.holdToken,
+        input: input as any,
+        channel: input.channel as any,
+        holdToken: input.holdToken as any,
       });
 
       // Write to Google Calendar (best-effort, non-blocking)
       writeBookingToCalendar(ctx.db, booking, tenant.timezone ?? "UTC").catch(
         (err) => console.error("[gcal] write-back failed:", err)
+      );
+
+      // Send confirmation email (best-effort, non-blocking)
+      sendBookingConfirmationForBooking(ctx.db, booking, tenant).catch(
+        (err) => console.error("[email] confirmation failed:", err)
       );
 
       return booking;
@@ -242,7 +256,7 @@ export const bookingsRouter = router({
       await ctx.db.transaction(async (tx) => {
         await tx
           .update(bookings)
-          .set({ status: "cancelled", updatedAt: new Date() })
+          .set({ status: "cancelled", updatedAt: new Date() } as any)
           .where(eq(bookings.id, input.id));
 
         await tx.insert(bookingStatusHistory).values({
@@ -250,9 +264,9 @@ export const bookingsRouter = router({
           bookingId: input.id,
           fromStatus: existing.status,
           toStatus: "cancelled",
-          changedBy: `user:${ctx.tenantUser.clerkUserId}`,
+          changedBy: `user:${ctx.tenantUser.userId}`,
           reason: input.reason ?? null,
-        });
+        } as any);
       });
 
       await ctx.audit("booking.cancelled", {
@@ -266,6 +280,11 @@ export const bookingsRouter = router({
       // Remove Google Calendar event (best-effort)
       deleteBookingFromCalendar(ctx.db, existing).catch(
         (err) => console.error("[gcal] delete event failed:", err)
+      );
+
+      // Send cancellation email (best-effort, non-blocking)
+      sendBookingCancellationForBooking(ctx.db, existing, ctx.tenant, input.reason).catch(
+        (err) => console.error("[email] cancellation failed:", err)
       );
 
       return { success: true };
@@ -326,7 +345,7 @@ export const bookingsRouter = router({
             currency: existing.currency,
             rescheduledFromId: existing.id,
             lastModifiedByUserId: ctx.tenantUser.id,
-          })
+          } as any)
           .returning();
 
         newBooking = created!;
@@ -338,7 +357,7 @@ export const bookingsRouter = router({
             status: "rescheduled",
             rescheduledToId: newBooking.id,
             updatedAt: new Date(),
-          })
+          } as any)
           .where(eq(bookings.id, input.id));
 
         // Record status history for both
@@ -348,7 +367,7 @@ export const bookingsRouter = router({
             bookingId: input.id,
             fromStatus: existing.status,
             toStatus: "rescheduled",
-            changedBy: `user:${ctx.tenantUser.clerkUserId}`,
+            changedBy: `user:${ctx.tenantUser.userId}`,
             reason: input.reason ?? null,
             metadata: { newBookingId: newBooking.id },
           },
@@ -357,11 +376,11 @@ export const bookingsRouter = router({
             bookingId: newBooking.id,
             fromStatus: null,
             toStatus: "confirmed",
-            changedBy: `user:${ctx.tenantUser.clerkUserId}`,
+            changedBy: `user:${ctx.tenantUser.userId}`,
             reason: "Rescheduled from original booking",
             metadata: { originalBookingId: input.id },
           },
-        ]);
+        ] as any);
       });
 
       await ctx.audit("booking.rescheduled", {
@@ -395,7 +414,7 @@ export const bookingsRouter = router({
           internalNote: input.note,
           lastModifiedByUserId: ctx.tenantUser.id,
           updatedAt: new Date(),
-        })
+        } as any)
         .where(
           and(
             eq(bookings.id, input.id),
@@ -414,7 +433,234 @@ export const bookingsRouter = router({
 
       return updated;
     }),
+
+  /**
+   * Confirm a pending booking.
+   */
+  confirm: manageBookingsProcedure
+    .use(withAudit)
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await ctx.db.query.bookings.findFirst({
+        where: and(eq(bookings.id, input.id), eq(bookings.tenantId, ctx.tenant.id)),
+      });
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
+      if (existing.status !== "pending") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Booking is already ${existing.status}.` });
+      }
+
+      await ctx.db.transaction(async (tx) => {
+        await tx.update(bookings).set({ status: "confirmed", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, input.id));
+        await tx.insert(bookingStatusHistory).values({
+          tenantId: ctx.tenant.id, bookingId: input.id,
+          fromStatus: "pending", toStatus: "confirmed",
+          changedBy: `user:${ctx.tenantUser.userId}`,
+        } as any);
+      });
+
+      await ctx.audit("booking.confirmed", {
+        resourceType: "booking", resourceId: input.id,
+        before: { status: "pending" }, after: { status: "confirmed" },
+      });
+
+      return { success: true };
+    }),
+
+  /**
+   * Mark a booking as completed.
+   */
+  complete: manageBookingsProcedure
+    .use(withAudit)
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await ctx.db.query.bookings.findFirst({
+        where: and(eq(bookings.id, input.id), eq(bookings.tenantId, ctx.tenant.id)),
+      });
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!["confirmed", "pending"].includes(existing.status)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Cannot complete a booking with status "${existing.status}".` });
+      }
+
+      await ctx.db.transaction(async (tx) => {
+        await tx.update(bookings).set({ status: "completed", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, input.id));
+        await tx.insert(bookingStatusHistory).values({
+          tenantId: ctx.tenant.id, bookingId: input.id,
+          fromStatus: existing.status, toStatus: "completed",
+          changedBy: `user:${ctx.tenantUser.userId}`,
+        } as any);
+      });
+
+      await ctx.audit("booking.completed", {
+        resourceType: "booking", resourceId: input.id,
+        before: { status: existing.status }, after: { status: "completed" },
+      });
+
+      return { success: true };
+    }),
+
+  /**
+   * Mark a booking as no-show.
+   */
+  markNoShow: manageBookingsProcedure
+    .use(withAudit)
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await ctx.db.query.bookings.findFirst({
+        where: and(eq(bookings.id, input.id), eq(bookings.tenantId, ctx.tenant.id)),
+      });
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!["confirmed", "pending"].includes(existing.status)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Cannot mark a booking with status "${existing.status}" as no-show.` });
+      }
+
+      await ctx.db.transaction(async (tx) => {
+        await tx.update(bookings).set({ status: "no_show", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, input.id));
+        await tx.insert(bookingStatusHistory).values({
+          tenantId: ctx.tenant.id, bookingId: input.id,
+          fromStatus: existing.status, toStatus: "no_show",
+          changedBy: `user:${ctx.tenantUser.userId}`,
+        } as any);
+      });
+
+      await ctx.audit("booking.no_show", {
+        resourceType: "booking", resourceId: input.id,
+        before: { status: existing.status }, after: { status: "no_show" },
+      });
+
+      return { success: true };
+    }),
+
+  /**
+   * Dashboard stats — counts for today, this month, and upcoming bookings.
+   */
+  getStats: protectedProcedure.query(async ({ ctx }) => {
+    const now   = new Date();
+    const tz    = ctx.tenant.timezone ?? "UTC";
+
+    // Today's date string in the tenant's timezone (sv-SE locale gives ISO-like YYYY-MM-DD)
+    const todayStr    = now.toLocaleDateString("sv-SE", { timeZone: tz });
+    // Use UTC midnight boundaries for "today" — good enough for most timezones
+    const todayStartUTC = new Date(`${todayStr}T00:00:00.000Z`);
+    const todayEndUTC   = new Date(`${todayStr}T23:59:59.999Z`);
+
+    // This-month boundaries
+    const [year, month] = todayStr.split("-").map(Number);
+    const monthStart = new Date(Date.UTC(year!, month! - 1, 1));
+    const monthEnd   = new Date(Date.UTC(year!, month!, 0, 23, 59, 59, 999));
+
+    const [
+      todayRows,
+      monthRows,
+      upcomingRows,
+      pendingRows,
+    ] = await Promise.all([
+      // Bookings today (confirmed + pending)
+      ctx.db
+        .select({ cnt: count() })
+        .from(bookings)
+        .where(and(
+          eq(bookings.tenantId, ctx.tenant.id),
+          gte(bookings.startsAt, todayStartUTC),
+          lte(bookings.startsAt, todayEndUTC),
+          inArray(bookings.status, ["confirmed", "pending"]),
+        )),
+      // Bookings this month (all non-cancelled)
+      ctx.db
+        .select({ cnt: count() })
+        .from(bookings)
+        .where(and(
+          eq(bookings.tenantId, ctx.tenant.id),
+          gte(bookings.startsAt, monthStart),
+          lte(bookings.startsAt, monthEnd),
+          inArray(bookings.status, ["confirmed", "pending", "completed"]),
+        )),
+      // Upcoming bookings (next 7 days, confirmed)
+      ctx.db.query.bookings.findMany({
+        where: and(
+          eq(bookings.tenantId, ctx.tenant.id),
+          gte(bookings.startsAt, now),
+          lte(bookings.startsAt, new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)),
+          eq(bookings.status, "confirmed"),
+        ),
+        with: {
+          service: { columns: { name: true, colorHex: true } },
+          staff:   { columns: { displayName: true } },
+        },
+        orderBy: (b, { asc }) => asc(b.startsAt),
+        limit: 5,
+      }),
+      // Pending (awaiting confirmation)
+      ctx.db
+        .select({ cnt: count() })
+        .from(bookings)
+        .where(and(
+          eq(bookings.tenantId, ctx.tenant.id),
+          eq(bookings.status, "pending"),
+          gte(bookings.startsAt, now),
+        )),
+    ]);
+
+    return {
+      todayCount:    todayRows[0]?.cnt  ?? 0,
+      monthCount:    monthRows[0]?.cnt  ?? 0,
+      pendingCount:  pendingRows[0]?.cnt ?? 0,
+      upcoming:      upcomingRows,
+    };
+  }),
 });
+
+// ─── Email helpers ────────────────────────────────────────────────────────────
+
+async function sendBookingConfirmationForBooking(
+  db: import("@booking-agent/db").DB,
+  booking: typeof bookings.$inferSelect,
+  tenant: { name: string; timezone: string | null }
+): Promise<void> {
+  const { services, staff } = await import("@booking-agent/db");
+  const [service, staffRow] = await Promise.all([
+    db.query.services.findFirst({ where: eq(services.id, booking.serviceId), columns: { name: true } }),
+    db.query.staff.findFirst({ where: eq(staff.id, booking.staffId), columns: { displayName: true } }),
+  ]);
+  await sendBookingConfirmation({
+    customerName:  booking.customerName,
+    customerEmail: booking.customerEmail,
+    businessName:  tenant.name,
+    serviceName:   service?.name ?? "Service",
+    staffName:     staffRow?.displayName ?? "Staff",
+    startsAt:      booking.startsAt,
+    endsAt:        booking.endsAt,
+    timezone:      tenant.timezone ?? "UTC",
+    bookingId:     booking.id,
+  });
+}
+
+async function sendBookingCancellationForBooking(
+  db: import("@booking-agent/db").DB,
+  booking: typeof bookings.$inferSelect,
+  tenant: { name: string; timezone: string | null },
+  reason?: string
+): Promise<void> {
+  const { services, staff } = await import("@booking-agent/db");
+  const [service, staffRow] = await Promise.all([
+    db.query.services.findFirst({ where: eq(services.id, booking.serviceId), columns: { name: true } }),
+    db.query.staff.findFirst({ where: eq(staff.id, booking.staffId), columns: { displayName: true } }),
+  ]);
+  await sendBookingCancellation({
+    customerName:  booking.customerName,
+    customerEmail: booking.customerEmail,
+    businessName:  tenant.name,
+    serviceName:   service?.name ?? "Service",
+    staffName:     staffRow?.displayName ?? "Staff",
+    startsAt:      booking.startsAt,
+    endsAt:        booking.endsAt,
+    timezone:      tenant.timezone ?? "UTC",
+    bookingId:     booking.id,
+    reason,
+  });
+}
 
 // ─── Shared transaction helper ────────────────────────────────────────────────
 
@@ -483,7 +729,7 @@ async function createBookingTransaction({
         status: "confirmed",
         channel,
         holdToken,
-      })
+      } as any)
       .returning();
 
     // STEP 4: Record initial status history
@@ -493,7 +739,7 @@ async function createBookingTransaction({
       fromStatus: null,
       toStatus: "confirmed",
       changedBy: channel === "back_office" ? "back_office" : channel,
-    });
+    } as any);
 
     // STEP 5: Consume the hold token
     if (holdToken) {

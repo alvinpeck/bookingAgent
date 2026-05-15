@@ -13,6 +13,7 @@ import {
   slotHolds,
   bookings,
   services,
+  staff as staffTable,
   tenants,
   dayOfWeekEnum,
   HOLD_DURATION_SECONDS,
@@ -105,13 +106,30 @@ export const availabilityRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // Validate times (endTime must be after startTime)
+      // Validate: endTime must be after startTime
       for (const rule of input.rules) {
         if (rule.endTime <= rule.startTime) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `End time must be after start time on ${rule.dayOfWeek}`,
           });
+        }
+      }
+
+      // Validate: no overlapping windows on the same day
+      const byDay: Record<string, { startTime: string; endTime: string }[]> = {};
+      for (const rule of input.rules) {
+        (byDay[rule.dayOfWeek] ??= []).push({ startTime: rule.startTime, endTime: rule.endTime });
+      }
+      for (const [day, dayRules] of Object.entries(byDay)) {
+        const sorted = [...dayRules].sort((a, b) => a.startTime.localeCompare(b.startTime));
+        for (let i = 0; i < sorted.length - 1; i++) {
+          if (sorted[i + 1]!.startTime < sorted[i]!.endTime) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Overlapping time slots detected on ${day}. Please ensure slots don't overlap.`,
+            });
+          }
         }
       }
 
@@ -134,7 +152,7 @@ export const availabilityRouter = router({
               staffId: input.staffId,
               ...rule,
               isActive: true,
-            }))
+            })) as any
           );
         }
       });
@@ -209,7 +227,7 @@ export const availabilityRouter = router({
           startTime: input.startTime ?? null,
           endTime: input.endTime ?? null,
           reason: input.reason ?? null,
-        })
+        } as any)
         .onConflictDoUpdate({
           target: [availabilityOverrides.staffId, availabilityOverrides.overrideDate],
           set: {
@@ -217,7 +235,7 @@ export const availabilityRouter = router({
             startTime: input.startTime ?? null,
             endTime: input.endTime ?? null,
             reason: input.reason ?? null,
-          },
+          } as any,
         })
         .returning();
 
@@ -311,7 +329,7 @@ export const availabilityRouter = router({
         slotEndAt: new Date(input.slotEndAt),
         holdToken,
         expiresAt,
-      });
+      } as any);
 
       return {
         holdToken,
@@ -367,8 +385,13 @@ export const availabilityRouter = router({
           eq(availabilityRules.staffId, input.staffId),
           eq(availabilityRules.isActive, true)
         ),
+        orderBy: (r, { asc }) => asc(r.startTime),
       });
-      const ruleByDay = Object.fromEntries(rules.map((r) => [r.dayOfWeek, r]));
+      // Group rules by day — multiple windows per day are supported
+      const rulesByDay: Record<string, typeof rules> = {};
+      for (const r of rules) {
+        (rulesByDay[r.dayOfWeek] ??= []).push(r);
+      }
 
       // ── 4. Fetch overrides in range ──────────────────────────────────────────
       const overrides = await ctx.db.query.availabilityOverrides.findMany({
@@ -457,52 +480,170 @@ export const availabilityRouter = router({
 
       for (const dateStr of dateRange(input.from, input.to)) {
         const override = overrideByDate[dateStr];
-
         if (override?.isBlocked) continue;
 
-        let startTime: string | null = null;
-        let endTime: string | null = null;
+        // Build a list of { startTime, endTime } windows for this date.
+        // Overrides provide a single custom window; weekly rules can have many.
+        let windows: { startTime: string; endTime: string }[];
 
         if (override && !override.isBlocked && override.startTime && override.endTime) {
-          startTime = override.startTime.slice(0, 5);
-          endTime = override.endTime.slice(0, 5);
+          windows = [{
+            startTime: (override.startTime as string).slice(0, 5),
+            endTime:   (override.endTime as string).slice(0, 5),
+          }];
         } else {
           const jsDay = new Date(`${dateStr}T12:00:00Z`).getUTCDay();
           const dayName = DAY_NAMES[jsDay];
-          const rule = ruleByDay[dayName];
-          if (!rule) continue;
-          startTime = rule.startTime.slice(0, 5);
-          endTime = rule.endTime.slice(0, 5);
+          const dayRules = rulesByDay[dayName ?? ""] ?? [];
+          if (!dayRules.length) continue;
+          windows = dayRules.map((r) => ({
+            startTime: (r.startTime as string).slice(0, 5),
+            endTime:   (r.endTime as string).slice(0, 5),
+          }));
         }
 
-        const dayStart = localToUTC(dateStr, startTime, tz);
-        const dayEnd = localToUTC(dateStr, endTime, tz);
+        // Generate slots for each time window (supports multiple per day)
+        for (const { startTime, endTime } of windows) {
+          const dayStart = localToUTC(dateStr, startTime, tz);
+          const dayEnd   = localToUTC(dateStr, endTime, tz);
 
-        let cursor = new Date(dayStart);
-        while (cursor.getTime() + slotMinutes * 60_000 <= dayEnd.getTime()) {
-          const slotStart = new Date(cursor);
-          const slotEnd = new Date(cursor.getTime() + slotMinutes * 60_000);
-          const appointmentEnd = new Date(
-            cursor.getTime() + service.durationMinutes * 60_000
-          );
+          let cursor = new Date(dayStart);
+          while (cursor.getTime() + slotMinutes * 60_000 <= dayEnd.getTime()) {
+            const slotStart      = new Date(cursor);
+            const slotEnd        = new Date(cursor.getTime() + slotMinutes * 60_000);
+            const appointmentEnd = new Date(cursor.getTime() + service.durationMinutes * 60_000);
 
-          // Skip slots in the past (1 min grace)
-          if (slotStart.getTime() < now.getTime() - 60_000) {
+            // Skip slots in the past (1 min grace)
+            if (slotStart.getTime() < now.getTime() - 60_000) {
+              cursor = slotEnd;
+              continue;
+            }
+
+            if (!overlaps(slotStart, slotEnd)) {
+              slots.push({
+                startsAt: slotStart.toISOString(),
+                endsAt:   appointmentEnd.toISOString(),
+              });
+            }
+
             cursor = slotEnd;
-            continue;
           }
-
-          if (!overlaps(slotStart, slotEnd)) {
-            slots.push({
-              startsAt: slotStart.toISOString(),
-              endsAt: appointmentEnd.toISOString(),
-            });
-          }
-
-          cursor = slotEnd;
         }
       }
 
       return { slots, timezone: tz };
+    }),
+
+  /**
+   * Preview public holidays for a given country and year without writing to the DB.
+   * Fetches from the free Nager.Date API (no auth required, CORS-friendly).
+   */
+  previewHolidays: protectedProcedure
+    .input(
+      z.object({
+        countryCode: z.string().length(2).toUpperCase(),
+        year: z.number().int().min(2020).max(2035),
+      })
+    )
+    .query(async ({ input }) => {
+      const resp = await fetch(
+        `https://date.nager.at/api/v3/PublicHolidays/${input.year}/${input.countryCode}`
+      );
+      if (!resp.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Could not load holidays for ${input.countryCode}/${input.year}. The country code may not be supported.`,
+        });
+      }
+      const data = (await resp.json()) as Array<{
+        date: string;
+        localName: string;
+        name: string;
+        types: string[];
+      }>;
+      return data.map((h) => ({
+        date: h.date,
+        name: h.localName || h.name,
+        englishName: h.name,
+      }));
+    }),
+
+  /**
+   * Import public holidays as blocked overrides for ALL active staff in the tenant.
+   * Uses onConflictDoNothing so existing custom overrides are never overwritten.
+   */
+  importHolidays: protectedProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        countryCode: z.string().length(2).toUpperCase(),
+        year: z.number().int().min(2020).max(2035),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Fetch holidays
+      const resp = await fetch(
+        `https://date.nager.at/api/v3/PublicHolidays/${input.year}/${input.countryCode}`
+      );
+      if (!resp.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Could not load holidays for ${input.countryCode}/${input.year}.`,
+        });
+      }
+      const holidays = (await resp.json()) as Array<{
+        date: string;
+        localName: string;
+        name: string;
+      }>;
+
+      if (!holidays.length) return { imported: 0, staffCount: 0, holidaysCount: 0 };
+
+      // Get all active staff for this tenant
+      const allStaff = await ctx.db.query.staff.findMany({
+        where: and(
+          eq(staffTable.tenantId, ctx.tenant.id),
+          eq(staffTable.isActive, true)
+        ),
+        columns: { id: true },
+      });
+
+      if (!allStaff.length) return { imported: 0, staffCount: 0, holidaysCount: holidays.length };
+
+      // Build one override per staff × holiday
+      const values = allStaff.flatMap((s) =>
+        holidays.map((h) => ({
+          tenantId:     ctx.tenant.id,
+          staffId:      s.id,
+          overrideDate: h.date,
+          isBlocked:    true as const,
+          startTime:    null as string | null,
+          endTime:      null as string | null,
+          reason:       `Public Holiday: ${h.localName || h.name}`,
+        }))
+      );
+
+      // Insert — skip conflicts so custom overrides on the same date are preserved
+      await ctx.db
+        .insert(availabilityOverrides)
+        .values(values as any)
+        .onConflictDoNothing();
+
+      await ctx.audit("availability.updated", {
+        resourceType: "availability_override",
+        resourceId:   ctx.tenant.id,
+        after: {
+          countryCode:   input.countryCode,
+          year:          input.year,
+          holidaysCount: holidays.length,
+          staffCount:    allStaff.length,
+        },
+      });
+
+      return {
+        imported:      values.length,
+        staffCount:    allStaff.length,
+        holidaysCount: holidays.length,
+      };
     }),
 });

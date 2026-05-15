@@ -41,7 +41,7 @@ export async function incrementUsage(
       metric,
       periodMonth: period,
       count: amount,
-    })
+    } as any)
     .onConflictDoUpdate({
       target: [
         usageMetering.tenantId,
@@ -51,7 +51,7 @@ export async function incrementUsage(
       set: {
         count: sql`${usageMetering.count} + ${amount}`,
         updatedAt: sql`now()`,
-      },
+      } as any,
     })
     .returning({ count: usageMetering.count });
 

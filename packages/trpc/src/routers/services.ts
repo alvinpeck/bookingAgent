@@ -178,7 +178,7 @@ export const servicesRouter = router({
           tenantId: ctx.tenant.id,
           ...input,
           status: "draft",
-        })
+        } as any)
         .returning();
 
       await ctx.audit("service.created", {
@@ -214,7 +214,7 @@ export const servicesRouter = router({
 
       const [updated] = await ctx.db
         .update(services)
-        .set({ ...input.data, updatedAt: new Date() })
+        .set({ ...input.data, updatedAt: new Date() } as any)
         .where(
           and(
             eq(services.id, input.id),
@@ -247,7 +247,7 @@ export const servicesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(services)
-        .set({ status: input.status, updatedAt: new Date() })
+        .set({ status: input.status, updatedAt: new Date() } as any)
         .where(
           and(
             eq(services.id, input.id),
@@ -280,7 +280,7 @@ export const servicesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const [deleted] = await ctx.db
         .update(services)
-        .set({ deletedAt: new Date(), status: "archived", updatedAt: new Date() })
+        .set({ deletedAt: new Date(), status: "archived", updatedAt: new Date() } as any)
         .where(
           and(
             eq(services.id, input.id),

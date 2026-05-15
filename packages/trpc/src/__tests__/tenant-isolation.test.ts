@@ -60,7 +60,6 @@ function makeDb(callerTenantId: string) {
       tenants: {
         findFirst: vi.fn(async () => ({
           id: callerTenantId,
-          clerkOrgId: "org_a",
           plan: "starter",
           status: "active",
           slug: "tenant-a",
@@ -85,7 +84,6 @@ function makeTenantContext(tenantId: string, role = "admin") {
     db: makeDb(tenantId),
     tenant: {
       id: tenantId,
-      clerkOrgId: "org_a",
       name: "Test Tenant",
       slug: "test-tenant",
       plan: "starter" as const,
@@ -106,7 +104,7 @@ function makeTenantContext(tenantId: string, role = "admin") {
     tenantUser: {
       id: "user-uuid-0001",
       tenantId,
-      clerkUserId: "user_clerk_001",
+      userId: "user-uuid-auth-0001",
       email: "user@test.com",
       firstName: "Test",
       lastName: "User",
@@ -119,8 +117,6 @@ function makeTenantContext(tenantId: string, role = "admin") {
       createdAt: new Date(),
       updatedAt: new Date(),
     },
-    clerkUserId: "user_clerk_001",
-    clerkOrgId: "org_a",
     requestId: "req-001",
     ipAddress: "127.0.0.1",
     userAgent: "test",
@@ -132,8 +128,8 @@ function makeTenantContext(tenantId: string, role = "admin") {
 
 describe("Tenant Isolation", () => {
   describe("Context derivation", () => {
-    it("should derive tenantId from Clerk orgId, not from client input", () => {
-      // The context factory (context.ts) uses clerkOrgId from the auth token,
+    it("should derive tenantId from the active-tenant cookie, not from client input", () => {
+      // The context factory (context.ts) uses the active-tenant cookie + DB lookup,
       // not any value from the request body.
       const ctx = makeTenantContext(TENANT_A_ID);
 

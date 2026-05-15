@@ -12,22 +12,33 @@
     "./lib/agent": "./src/lib/agent.ts",
     "./lib/whatsapp-send": "./src/lib/whatsapp-send.ts",
     "./lib/logger": "./src/lib/logger.ts",
+    "./lib/email": "./src/lib/email/index.ts",
     "./lib/usage": {
       "types": "./src/lib/usage.ts",
       "default": "./src/lib/usage.ts"
+    },
+    "./lib/stripe": {
+      "types": "./src/lib/stripe.ts",
+      "default": "./src/lib/stripe.ts"
     }
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.74",
+    "@ai-sdk/google": "^3.0.71",
+    "@ai-sdk/groq": "^3.0.39",
     "@ai-sdk/openai": "^3.0.58",
     "@booking-agent/db": "workspace:*",
-    "@clerk/nextjs": "^6.9.3",
     "@trpc/server": "^11.0.0",
     "ai": "^6.0.174",
     "drizzle-orm": "^0.38.3",
     "ioredis": "^5.10.1",
+    "resend": "^6.12.3",
+    "stripe": "^22.1.1",
     "superjson": "^2.2.1",
     "zod": "^3.24.1"
+  },
+  "peerDependencies": {
+    "next": ">=15.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
