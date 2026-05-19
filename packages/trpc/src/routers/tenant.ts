@@ -490,4 +490,85 @@ export const tenantRouter = router({
 
       return { success: true };
     }),
+
+  // ─── Agent customization ───────────────────────────────────────────────────
+
+  /** Load all agent:* settings for the current tenant. */
+  getAgentSettings: protectedProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db.query.tenantSettings.findMany({
+      where: eq(tenantSettings.tenantId, ctx.tenant.id),
+      columns: { key: true, value: true },
+    });
+
+    const map: Record<string, string> = {};
+    for (const row of rows) {
+      if ((row.key as string).startsWith("agent:")) {
+        map[row.key as string] = row.value as string;
+      }
+    }
+
+    return {
+      name:               map["agent:name"]          ?? "",
+      tone:               map["agent:tone"]          ?? "friendly",
+      language:           map["agent:language"]      ?? "en",
+      greeting:           map["agent:greeting"]      ?? "",
+      businessInfo:       map["agent:business_info"] ?? "",
+      customInstructions: map["agent:instructions"]  ?? "",
+      closingMessage:     map["agent:closing"]       ?? "",
+      fallbackMessage:    map["agent:fallback"]      ?? "",
+      // AI provider / model selection (empty = auto-priority fallback)
+      provider:           map["agent:provider"]      ?? "",
+      model:              map["agent:model"]         ?? "",
+    };
+  }),
+
+  /** Upsert agent customization settings for the current tenant. */
+  saveAgentSettings: protectedProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        name:               z.string().max(60),
+        tone:               z.enum(["friendly", "formal", "casual"]),
+        language:           z.string().max(10),
+        greeting:           z.string().max(500),
+        businessInfo:       z.string().max(2000),
+        customInstructions: z.string().max(2000),
+        closingMessage:     z.string().max(500),
+        fallbackMessage:    z.string().max(500),
+        provider:           z.string().max(30),   // e.g. "groq", "openai", "" = auto
+        model:              z.string().max(80),   // e.g. "llama-3.3-70b-versatile", "" = default
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const entries = [
+        { key: "agent:name",          value: input.name },
+        { key: "agent:tone",          value: input.tone },
+        { key: "agent:language",      value: input.language },
+        { key: "agent:greeting",      value: input.greeting },
+        { key: "agent:business_info", value: input.businessInfo },
+        { key: "agent:instructions",  value: input.customInstructions },
+        { key: "agent:closing",       value: input.closingMessage },
+        { key: "agent:fallback",      value: input.fallbackMessage },
+        { key: "agent:provider",      value: input.provider },
+        { key: "agent:model",         value: input.model },
+      ];
+
+      for (const { key, value } of entries) {
+        await ctx.db
+          .insert(tenantSettings)
+          .values({ tenantId: ctx.tenant.id, key, value } as any)
+          .onConflictDoUpdate({
+            target: [tenantSettings.tenantId, tenantSettings.key] as any,
+            set:    { value } as any,
+          });
+      }
+
+      await ctx.audit("tenant.settings_updated", {
+        resourceType: "agent_settings",
+        resourceId:   ctx.tenant.id,
+        after:        { name: input.name, tone: input.tone, language: input.language, provider: input.provider, model: input.model },
+      });
+
+      return { success: true };
+    }),
 });

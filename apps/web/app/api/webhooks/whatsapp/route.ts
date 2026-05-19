@@ -129,6 +129,20 @@ export async function POST(req: Request) {
       continue;
     }
 
+    // ── Replay protection — reject requests older than 5 minutes ─────────────
+    // Meta includes X-Hub-Timestamp (Unix seconds) on every POST.
+    // Combined with the HMAC check above this prevents replayed webhooks.
+    const tsHeader = req.headers.get("x-hub-timestamp");
+    const tsSeconds = tsHeader ? Number(tsHeader) : NaN;
+    const ageSeconds = Math.floor(Date.now() / 1000) - tsSeconds;
+    if (!tsHeader || isNaN(tsSeconds) || ageSeconds > 300) {
+      logger.warn("[whatsapp-webhook] Stale or missing timestamp — possible replay", {
+        channelId: channel.id,
+        ageSeconds: isNaN(ageSeconds) ? "missing" : ageSeconds,
+      });
+      continue; // drop silently — already returned 200 to Meta at end
+    }
+
     // Normalise messages and persist each one
     const messages = normalizeWhatsApp(entry);
 

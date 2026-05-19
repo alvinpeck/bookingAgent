@@ -4,7 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createGroq } from "@ai-sdk/groq";
 import { z } from "zod";
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, notInArray, gte, inArray, sql } from "drizzle-orm";
 import {
   db as _db,
   services,
@@ -13,6 +13,7 @@ import {
   serviceStaff,
   availabilityRules,
   tenantSettings,
+  tenants,
 } from "@booking-agent/db";
 import { decrypt } from "./crypto";
 import {
@@ -69,29 +70,116 @@ function minutesToAmPm(minutes: number): string {
   return `${displayH}:${displayM} ${period}`;
 }
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── System prompt (dynamic per tenant) ──────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a helpful booking assistant. You ONLY help with booking appointments — nothing else.
-If asked about anything unrelated, politely redirect to booking.
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English",
+  ms: "Bahasa Malaysia",
+  zh: "Chinese (Simplified)",
+  "zh-tw": "Chinese (Traditional)",
+  th: "Thai",
+  id: "Indonesian (Bahasa Indonesia)",
+  tl: "Filipino (Tagalog)",
+  vi: "Vietnamese",
+  ar: "Arabic",
+  hi: "Hindi",
+  fr: "French",
+  de: "German",
+  es: "Spanish",
+  pt: "Portuguese",
+  ja: "Japanese",
+  ko: "Korean",
+};
 
-FLOW:
-- Greet new users and show menu options
-- Collect: service, preferred date, preferred time, name, phone, email
-- Show a full summary and ask for confirmation BEFORE calling createBooking
-- After booking: show a confirmation with all details
+const TONE_INSTRUCTIONS: Record<string, string> = {
+  friendly: "Be warm, conversational and use light emojis (1–2 per message max). Sound like a helpful friend.",
+  formal:   "Be professional and respectful. Use polite language. No emojis. Keep responses concise.",
+  casual:   "Be relaxed and easy-going. Short sentences. Can use casual expressions but stay professional.",
+};
+
+interface AgentSettings {
+  agentName:          string;
+  businessName:       string;
+  tone:               string;
+  language:           string;
+  greeting:           string;
+  businessInfo:       string;
+  customInstructions: string;
+  closingMessage:     string;
+  fallbackMessage:    string;
+  serviceList:        { name: string; durationMinutes: number; price: string; currency: string }[];
+}
+
+function buildSystemPrompt(s: AgentSettings): string {
+  const langInstruction = s.language && s.language !== "en"
+    ? `IMPORTANT: Always respond in ${LANGUAGE_NAMES[s.language] ?? s.language}. Even if the user writes in English, reply in ${LANGUAGE_NAMES[s.language] ?? s.language}.`
+    : "Respond in the same language the user writes in.";
+
+  const toneInstruction = TONE_INSTRUCTIONS[s.tone] ?? TONE_INSTRUCTIONS["friendly"]!;
+
+  const servicesBlock = s.serviceList.length
+    ? `SERVICES OFFERED:\n${s.serviceList.map((svc, i) =>
+        `${i + 1}. ${svc.name} — ${svc.durationMinutes} min — ${svc.price} ${svc.currency}`
+      ).join("\n")}`
+    : "";
+
+  const businessInfoBlock = s.businessInfo.trim()
+    ? `ABOUT THE BUSINESS:\n${s.businessInfo.trim()}`
+    : "";
+
+  const customBlock = s.customInstructions.trim()
+    ? `ADDITIONAL INSTRUCTIONS FROM THE BUSINESS:\n${s.customInstructions.trim()}`
+    : "";
+
+  const greetingNote = s.greeting.trim()
+    ? `CUSTOM GREETING (use this exactly when a new conversation starts or user says hi/hello/menu/start):\n"${s.greeting.trim()}"`
+    : "";
+
+  const closingNote = s.closingMessage.trim()
+    ? `CLOSING MESSAGE (send this after every successful booking):\n"${s.closingMessage.trim()}"`
+    : "";
+
+  return `You are ${s.agentName || "a booking assistant"} for ${s.businessName}.
+Your ONLY purpose is to help customers book, view, and cancel appointments.
+If asked about anything unrelated, politely say you can only help with bookings.
+
+TONE: ${toneInstruction}
+
+LANGUAGE: ${langInstruction}
+
+${servicesBlock}
+
+${businessInfoBlock}
+
+BOOKING FLOW:
+1. Greet the customer and show the main menu
+2. Help them pick a service, then a date and time
+3. Collect: full name, phone number, email
+4. Show a full summary and ask "Shall I confirm this booking?"
+5. ONLY call createBooking after the customer confirms
+6. After booking: send confirmation details${s.closingMessage.trim() ? " followed by the closing message" : ""}
 
 RULES:
-- Keep messages short — this is a chat app
-- Use plain text only (no markdown)
-- Offer numbered choices when listing options
-- Show the main menu when user says "hi", "hello", "menu", "start"
-- If user seems lost, show the menu
+- Keep messages SHORT — this is a chat app, not email
+- Use plain text only (no markdown, no ** bold **, no bullet asterisks)
+- Use numbered lists when showing options
+- Show the main menu when user says: hi, hello, menu, start, help
+- If the user seems lost, show the menu
 
 MAIN MENU:
 1. Book appointment
 2. Check available times
 3. View my bookings
-4. Cancel a booking`;
+4. Cancel a booking
+
+${greetingNote}
+
+${closingNote}
+
+${customBlock}
+
+TODAY'S DATE: ${new Date().toISOString().slice(0, 10)}`.replace(/\n{3,}/g, "\n\n").trim();
+}
 
 // ─── Core agent runner ────────────────────────────────────────────────────────
 
@@ -99,10 +187,39 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
   const { tenantId, channelId, externalUserId, platform, messageText, db } =
     opts;
 
-  // 1. Load API key from tenantSettings (fetch all settings for tenant, then filter)
-  const allSettings = await db.query.tenantSettings.findMany({
-    where: eq(tenantSettings.tenantId, tenantId),
-    columns: { key: true, value: true },
+  // 1. Load tenant info + all settings in parallel
+  const [tenant, allSettings, activeServices] = await Promise.all([
+    db.query.tenants.findFirst({
+      where: eq(tenants.id, tenantId),
+      columns: { name: true, timezone: true },
+    }),
+    db.query.tenantSettings.findMany({
+      where: eq(tenantSettings.tenantId, tenantId),
+      columns: { key: true, value: true },
+    }),
+    db.query.services.findMany({
+      where: and(eq(services.tenantId, tenantId), eq(services.status, "active")),
+      columns: { name: true, durationMinutes: true, price: true, currency: true },
+    }),
+  ]);
+
+  // Build the dynamic system prompt from per-tenant agent settings
+  const settingsMap: Record<string, string> = {};
+  for (const row of allSettings) {
+    settingsMap[row.key as string] = row.value as string;
+  }
+
+  const SYSTEM_PROMPT = buildSystemPrompt({
+    agentName:          settingsMap["agent:name"]          ?? "",
+    businessName:       tenant?.name                        ?? "the business",
+    tone:               settingsMap["agent:tone"]          ?? "friendly",
+    language:           settingsMap["agent:language"]      ?? "en",
+    greeting:           settingsMap["agent:greeting"]      ?? "",
+    businessInfo:       settingsMap["agent:business_info"] ?? "",
+    customInstructions: settingsMap["agent:instructions"]  ?? "",
+    closingMessage:     settingsMap["agent:closing"]       ?? "",
+    fallbackMessage:    settingsMap["agent:fallback"]      ?? "",
+    serviceList:        activeServices,
   });
 
   const anthropicRow = allSettings.find((r) => r.key === "apikey:anthropic");
@@ -114,11 +231,33 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let model: any;
 
+  // Tenant-selected provider (set in AI Agent settings page).
+  // Empty = auto-priority fallback (Anthropic → OpenAI → Groq → Gemini → Ollama).
+  const chosenProvider = (settingsMap["agent:provider"] ?? "").trim();
+  const chosenModel    = (settingsMap["agent:model"]    ?? "").trim();
+
   /**
-   * Provider priority: Anthropic → OpenAI → Groq → Gemini → Ollama
-   * The first configured key wins.
+   * Resolve which provider to initialise.
+   * If the tenant picked a specific provider, use that key exclusively.
+   * If the key for that provider is missing, return a config error rather than
+   * silently falling through to another provider.
    */
-  if (anthropicRow?.value) {
+  const resolvedProvider = chosenProvider ||
+    (anthropicRow?.value ? "anthropic" :
+     openaiRow?.value    ? "openai"    :
+     groqRow?.value      ? "groq"      :
+     geminiRow?.value    ? "gemini"    :
+     ollamaRow?.value    ? "ollama"    : "");
+
+  if (!resolvedProvider) {
+    return "This booking service is not yet configured. Please contact the business directly.";
+  }
+
+  if (resolvedProvider === "anthropic") {
+    if (!anthropicRow?.value) {
+      logger.error("[agent] Anthropic selected but no API key configured", { tenantId });
+      return "The selected AI provider (Anthropic) has no API key configured. Please update your API Keys settings.";
+    }
     let apiKey: string;
     try {
       apiKey = decrypt(anthropicRow.value as string);
@@ -126,6 +265,7 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       logger.error("[agent] Failed to decrypt Anthropic API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
+    const modelId = chosenModel || "claude-haiku-4-5-20251001";
     model = createAnthropic({
       apiKey,
       baseURL: "https://api.anthropic.com/v1",
@@ -145,9 +285,13 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
         }
         return globalThis.fetch(url, init);
       },
-    })("claude-haiku-4-5-20251001");
+    })(modelId);
 
-  } else if (openaiRow?.value) {
+  } else if (resolvedProvider === "openai") {
+    if (!openaiRow?.value) {
+      logger.error("[agent] OpenAI selected but no API key configured", { tenantId });
+      return "The selected AI provider (OpenAI) has no API key configured. Please update your API Keys settings.";
+    }
     let apiKey: string;
     try {
       apiKey = decrypt(openaiRow.value as string);
@@ -155,10 +299,15 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       logger.error("[agent] Failed to decrypt OpenAI API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
-    model = createOpenAI({ apiKey })("gpt-4o-mini");
+    const modelId = chosenModel || "gpt-4o-mini";
+    model = createOpenAI({ apiKey })(modelId);
 
-  } else if (groqRow?.value) {
+  } else if (resolvedProvider === "groq") {
     // ── Groq (free tier: llama-3.3-70b-versatile, ~14 400 req/day) ──────────
+    if (!groqRow?.value) {
+      logger.error("[agent] Groq selected but no API key configured", { tenantId });
+      return "The selected AI provider (Groq) has no API key configured. Please update your API Keys settings.";
+    }
     let apiKey: string;
     try {
       apiKey = decrypt(groqRow.value as string);
@@ -166,11 +315,15 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       logger.error("[agent] Failed to decrypt Groq API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
-    // llama-3.3-70b-versatile has reliable tool-calling support
-    model = createGroq({ apiKey })("llama-3.3-70b-versatile");
+    const modelId = chosenModel || "llama-3.3-70b-versatile";
+    model = createGroq({ apiKey })(modelId);
 
-  } else if (geminiRow?.value) {
+  } else if (resolvedProvider === "gemini") {
     // ── Google Gemini (free tier: 1 500 req/day on gemini-1.5-flash) ─────────
+    if (!geminiRow?.value) {
+      logger.error("[agent] Gemini selected but no API key configured", { tenantId });
+      return "The selected AI provider (Gemini) has no API key configured. Please update your API Keys settings.";
+    }
     let apiKey: string;
     try {
       apiKey = decrypt(geminiRow.value as string);
@@ -178,11 +331,15 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       logger.error("[agent] Failed to decrypt Gemini API key", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
-    model = createGoogleGenerativeAI({ apiKey })("gemini-1.5-flash");
+    const modelId = chosenModel || "gemini-1.5-flash";
+    model = createGoogleGenerativeAI({ apiKey })(modelId);
 
-  } else if (ollamaRow?.value) {
+  } else if (resolvedProvider === "ollama") {
     // ── Ollama (self-hosted, completely free) ─────────────────────────────────
-    // Store the base URL as the "key", e.g. http://localhost:11434/api
+    if (!ollamaRow?.value) {
+      logger.error("[agent] Ollama selected but no URL configured", { tenantId });
+      return "The selected AI provider (Ollama) has no URL configured. Please update your API Keys settings.";
+    }
     let baseURL: string;
     try {
       baseURL = decrypt(ollamaRow.value as string);
@@ -190,11 +347,11 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
       logger.error("[agent] Failed to decrypt Ollama URL", { tenantId });
       return "Sorry, there was a configuration error. Please contact support.";
     }
-    // Ollama exposes an OpenAI-compatible endpoint — use llama3.1 for tool support
+    const modelId = chosenModel || "llama3.1";
     model = createOpenAI({
       baseURL: baseURL.replace(/\/$/, "") + "/v1",
       apiKey:  "ollama", // Ollama doesn't require a real key
-    })("llama3.1");
+    })(modelId);
 
   } else {
     return "This booking service is not yet configured. Please contact the business directly.";
@@ -407,11 +564,42 @@ export async function runBookingAgent(opts: AgentOpts): Promise<string> {
           };
         }
 
-        // Find first available staff member (no overlapping booking)
+        // ── Round-robin staff selection (least-booked this week wins) ──────────
+        // 1. Count confirmed/pending bookings per staff since Monday 00:00 UTC
+        const weekStart = new Date();
+        weekStart.setUTCDate(weekStart.getUTCDate() - ((weekStart.getUTCDay() + 6) % 7));
+        weekStart.setUTCHours(0, 0, 0, 0);
+
+        const staffIds = staffLinks.map((s) => s.staffId);
+
+        const weekCounts = await db
+          .select({
+            staffId: bookings.staffId,
+            count: sql<number>`cast(count(*) as int)`,
+          })
+          .from(bookings)
+          .where(
+            and(
+              eq(bookings.tenantId, tenantId),
+              inArray(bookings.staffId, staffIds),
+              gte(bookings.startsAt, weekStart),
+              notInArray(bookings.status, ["cancelled", "rescheduled"])
+            )
+          )
+          .groupBy(bookings.staffId);
+
+        const countMap = new Map(weekCounts.map((r) => [r.staffId, r.count]));
+
+        // 2. Sort ascending — least booked first
+        const sortedStaffLinks = [...staffLinks].sort(
+          (a, b) => (countMap.get(a.staffId) ?? 0) - (countMap.get(b.staffId) ?? 0)
+        );
+
+        // 3. Pick first conflict-free staff from sorted list
         let assignedStaffId: string | null = null;
         let assignedStaffName: string | null = null;
 
-        for (const { staffId } of staffLinks) {
+        for (const { staffId } of sortedStaffLinks) {
           const existingForStaff = await db.query.bookings.findMany({
             where: and(
               eq(bookings.staffId, staffId),

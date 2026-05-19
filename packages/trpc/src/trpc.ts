@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import type { TRPCContext } from "./context";
 import type { UserRole, Permission } from "@booking-agent/db";
 import { hasPermission } from "@booking-agent/db";
+import { checkRateLimit } from "./lib/redis";
 
 // ─── tRPC init ────────────────────────────────────────────────────────────────
 
@@ -32,10 +33,27 @@ export const createCallerFactory = t.createCallerFactory;
 // ─── Procedures ───────────────────────────────────────────────────────────────
 
 /**
+ * IP-based rate limiter for unauthenticated routes.
+ * 60 requests per 60 seconds per IP — generous for real users, blocks bots.
+ */
+const withPublicRateLimit = middleware(async ({ ctx, next }) => {
+  const ip = ctx.ipAddress ?? "unknown";
+  const { allowed } = await checkRateLimit(`pub:ip:${ip}`, 60, 60);
+  if (!allowed) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: "Too many requests. Please slow down.",
+    });
+  }
+  return next();
+});
+
+/**
  * Public procedure — no auth required.
+ * Includes IP-based rate limiting to protect the public booking site from abuse.
  * Used for: booking site slot queries, public service listings.
  */
-export const publicProcedure = t.procedure;
+export const publicProcedure = t.procedure.use(withPublicRateLimit);
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 

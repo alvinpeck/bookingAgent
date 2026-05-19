@@ -1,46 +1,39 @@
 /**
- * Redis client singleton.
+ * Redis client singleton (ioredis).
  * Supports ElastiCache with TLS (rediss://) and local Redis (redis://).
  *
+ * Single shared client for the whole monorepo — imported by both this package
+ * and packages/trpc (which re-exports getRedis from here).
+ *
  * Used for:
- *   - Conversation state (Phase 10 — AI agent multi-turn)
- *   - Rate limiting (Phase 10)
- *   - Slot hold fast-path cache (Phase 5)
- *   - Session revocation list (Phase 3)
+ *   - Conversation state (AI agent multi-turn)
+ *   - Rate limiting
+ *   - Slot hold fast-path cache
+ *   - Session revocation list
  *
  * Import pattern:
- *   import { redis } from "@booking-agent/db";
+ *   import { redis, getRedis } from "@booking-agent/db";
  */
 
-import { createClient } from "redis";
+import Redis from "ioredis";
 
-const redisUrl = process.env.REDIS_URL;
-if (!redisUrl) {
-  throw new Error("REDIS_URL environment variable is not set");
-}
-
-// ElastiCache requires TLS — detected via rediss:// scheme
-const isTLS = redisUrl.startsWith("rediss://");
-
+// ── Global name is __ioredisClient (not __redisClient) to avoid picking up a
+// stale node-redis client that may have been stored under the old name during
+// hot-reload in development.
 declare global {
   // eslint-disable-next-line no-var
-  var __redisClient: ReturnType<typeof createClient> | undefined;
+  var __ioredisClient: Redis | undefined;
 }
 
-function buildClient() {
-  const client = createClient({
-    url: redisUrl,
-    socket: isTLS
-      ? {
-          tls: true,
-          // ElastiCache uses AWS-managed certs; rejectUnauthorized = true is correct
-          rejectUnauthorized: true,
-          // Reconnect with exponential backoff
-          reconnectStrategy: (retries) => Math.min(retries * 100, 3000),
-        }
-      : {
-          reconnectStrategy: (retries) => Math.min(retries * 100, 3000),
-        },
+function buildClient(): Redis {
+  const url = process.env.REDIS_URL ?? "redis://localhost:6379";
+
+  // No lazyConnect — ioredis auto-connects on first command and queues
+  // any commands sent before the connection is ready.
+  const client = new Redis(url, {
+    maxRetriesPerRequest: 3,
+    // Exponential back-off: min 100 ms, max 3 s
+    retryStrategy: (times) => Math.min(times * 100, 3000),
   });
 
   client.on("error", (err) => {
@@ -56,20 +49,18 @@ function buildClient() {
   return client;
 }
 
-// Singleton — prevents multiple connections in Next.js hot-reload
-const redis = global.__redisClient ?? buildClient();
+// Singleton — prevents multiple connections on Next.js hot-reload
+const redis: Redis = global.__ioredisClient ?? buildClient();
 
 if (process.env.NODE_ENV !== "production") {
-  global.__redisClient = redis;
+  global.__ioredisClient = redis;
 }
 
-// Connect lazily — called once on first use
-let connected = false;
-async function getRedis() {
-  if (!connected) {
-    await redis.connect();
-    connected = true;
-  }
+/**
+ * Return the shared Redis client.
+ * ioredis connects lazily on first command — no explicit connect() needed.
+ */
+function getRedis(): Redis {
   return redis;
 }
 
@@ -90,13 +81,13 @@ export const RedisKeys = {
   rateLimit: (tenantId: string, endpoint: string) =>
     `rl:${tenantId}:${endpoint}`,
 
-  /** Session revocation — tracks invalidated Clerk session IDs */
+  /** Session revocation — tracks invalidated session IDs */
   revokedSession: (sessionId: string) => `revoked:${sessionId}`,
 } as const;
 
 export const RedisTTL = {
-  conversation: 60 * 60,         // 1 hour
-  slotHold: 5 * 60,              // 5 minutes (matches HOLD_DURATION_SECONDS)
-  rateLimit: 60,                  // 1 minute window
-  revokedSession: 24 * 60 * 60,  // 24 hours
+  conversation: 60 * 60,        // 1 hour
+  slotHold: 5 * 60,             // 5 minutes (matches HOLD_DURATION_SECONDS)
+  rateLimit: 60,                 // 1 minute window
+  revokedSession: 24 * 60 * 60, // 24 hours
 } as const;

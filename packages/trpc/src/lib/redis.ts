@@ -1,19 +1,7 @@
-import Redis from "ioredis";
-
-let redisClient: Redis | null = null;
-
-export function getRedis(): Redis {
-  if (!redisClient) {
-    redisClient = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
-      maxRetriesPerRequest: 3,
-      lazyConnect: false,
-    });
-    redisClient.on("error", (err) => {
-      console.error("[redis] Connection error:", err);
-    });
-  }
-  return redisClient;
-}
+// Single shared ioredis client from the db package.
+// Importing here ensures the whole monorepo uses one connection pool to Redis.
+import { getRedis } from "@booking-agent/db";
+export { getRedis };
 
 /**
  * Sliding window rate limiter using sorted sets.
