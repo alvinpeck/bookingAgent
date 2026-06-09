@@ -3,6 +3,8 @@ import { auth } from "@/auth";
 import { db, tenantInvites, tenantUsers, users } from "@booking-agent/db";
 import { eq, and, isNull } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> }

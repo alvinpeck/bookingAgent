@@ -3,6 +3,8 @@ import { auth } from "@/auth";
 import { db, tenantUsers, tenants } from "@booking-agent/db";
 import { eq, and } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json([]);

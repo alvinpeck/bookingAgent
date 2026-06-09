@@ -4,6 +4,8 @@ import { eq } from "drizzle-orm";
 import { scrypt, randomBytes } from "crypto";
 import { promisify } from "util";
 
+export const dynamic = "force-dynamic";
+
 const scryptAsync = promisify(scrypt);
 
 async function hashPassword(password: string): Promise<string> {

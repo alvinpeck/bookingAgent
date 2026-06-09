@@ -8,6 +8,8 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getAdminSession, IMPERSONATE_COOKIE } from "@/lib/admin-auth";
 
+export const dynamic = "force-dynamic";
+
 export async function POST() {
   const admin = await getAdminSession();
   if (!admin) {

@@ -5,6 +5,8 @@ import { randomBytes } from "crypto";
 import { sendPasswordResetEmail } from "@booking-agent/trpc/lib/email";
 import { checkRateLimit } from "@booking-agent/trpc/lib/redis";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(req: Request) {
   try {
     // Rate limit: 3 attempts per IP per hour to prevent email flooding / enumeration

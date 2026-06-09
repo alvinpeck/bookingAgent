@@ -5,6 +5,8 @@ import { cookies } from "next/headers";
 import { eq, and } from "drizzle-orm";
 import { db, staff, tenants, tenantUsers } from "@booking-agent/db";
 
+export const dynamic = "force-dynamic";
+
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.readonly",

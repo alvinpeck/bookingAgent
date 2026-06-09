@@ -3,6 +3,8 @@ import { db, tenants, tenantSettings, conversations, webhookEvents } from "@book
 import { eq, lt, and, sql } from "drizzle-orm";
 import { logger } from "@booking-agent/trpc/lib/logger";
 
+export const dynamic = "force-dynamic";
+
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
 const DEFAULTS = {

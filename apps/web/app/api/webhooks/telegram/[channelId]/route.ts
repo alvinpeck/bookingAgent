@@ -15,6 +15,8 @@ import { sendTelegramMessage } from "@booking-agent/trpc/lib/telegram-send";
 import { runBookingAgent } from "@booking-agent/trpc/lib/agent";
 import { logger } from "@booking-agent/trpc/lib/logger";
 
+export const dynamic = "force-dynamic";
+
 /**
  * Telegram Bot webhook.
  *

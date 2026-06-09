@@ -15,16 +15,14 @@ import Stripe from "stripe";
 import { db, tenants } from "@booking-agent/db";
 import { eq } from "drizzle-orm";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", {
-  apiVersion: "2026-04-22.dahlia",
-});
+export const dynamic = "force-dynamic";
 
-// Fail fast at module load — a missing secret means every webhook silently
-// accepts unauthenticated requests after the empty-string check below.
-if (!process.env.STRIPE_WEBHOOK_SECRET) {
-  throw new Error("STRIPE_WEBHOOK_SECRET env var is required but not set.");
+// Lazily initialised — env vars are not available at build time
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error("STRIPE_SECRET_KEY env var is required but not set.");
+  return new Stripe(key, { apiVersion: "2026-04-22.dahlia" });
 }
-const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 /** Map Stripe subscription status → our tenant status */
 function stripeStatusToTenantStatus(
@@ -161,14 +159,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 400 });
   }
 
-  if (!WEBHOOK_SECRET) {
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!webhookSecret) {
     console.error("[stripe/webhook] STRIPE_WEBHOOK_SECRET is not set");
     return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 });
   }
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(body, signature, WEBHOOK_SECRET);
+    event = getStripe().webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err) {
     console.error("[stripe/webhook] signature verification failed:", err);
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });

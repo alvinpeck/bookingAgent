@@ -4,6 +4,8 @@ import { db, tenants, tenantUsers, users } from "@booking-agent/db";
 import { eq } from "drizzle-orm";
 import Stripe from "stripe";
 
+export const dynamic = "force-dynamic";
+
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2026-04-22.dahlia" })
   : null;

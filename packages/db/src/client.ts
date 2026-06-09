@@ -6,13 +6,12 @@ import * as schema from "./schema/index";
 // Connection strategy
 //   • MIGRATIONS: use DATABASE_URL_DIRECT (no pooler, required by Drizzle Kit)
 //   • RUNTIME:    use DATABASE_URL        (pooled, handles serverless concurrency)
+//
+// We initialise with a fallback placeholder so Next.js can import this module
+// during `next build` page-data collection without DATABASE_URL present.
+// The postgres client is lazy-connecting — it only opens a TCP socket when a
+// query is actually sent, so a missing / invalid URL only fails at query time.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error("DATABASE_URL environment variable is not set");
-}
 
 // Prevent multiple connections in Next.js hot-reload (dev only)
 declare global {
@@ -20,7 +19,8 @@ declare global {
   var __dbClient: ReturnType<typeof postgres> | undefined;
 }
 
-// RDS requires SSL; local dev works without it
+const connectionString = process.env.DATABASE_URL ?? "postgresql://localhost/placeholder";
+
 const isRDS = connectionString.includes(".rds.amazonaws.com");
 
 const client =

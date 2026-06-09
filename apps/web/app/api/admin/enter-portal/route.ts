@@ -21,6 +21,8 @@ import {
 import { db, tenants, tenantUsers, auditLogs } from "@booking-agent/db";
 import { eq, and } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   // ── 1. Verify admin session ─────────────────────────────────────────────────
   const admin = await getAdminSession();

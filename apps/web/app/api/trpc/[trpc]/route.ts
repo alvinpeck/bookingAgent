@@ -4,6 +4,8 @@ import type { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { verifyImpersonateJwt, IMPERSONATE_COOKIE } from "@/lib/admin-auth";
 
+export const dynamic = "force-dynamic";
+
 async function handler(req: NextRequest) {
   const session      = await auth();
   let userId         = session?.user?.id ?? null;

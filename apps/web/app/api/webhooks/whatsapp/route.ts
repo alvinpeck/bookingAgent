@@ -12,6 +12,8 @@ import { sendWhatsAppMessage } from "@booking-agent/trpc/lib/whatsapp-send";
 import { runBookingAgent } from "@booking-agent/trpc/lib/agent";
 import { logger } from "@booking-agent/trpc/lib/logger";
 
+export const dynamic = "force-dynamic";
+
 /**
  * WhatsApp Cloud API webhook.
  *

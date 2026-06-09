@@ -7,6 +7,8 @@ import { db } from "@booking-agent/db";
 import { sql } from "drizzle-orm";
 import { getRedis } from "@booking-agent/trpc/lib/redis";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const checks: Record<string, "ok" | "fail"> = {};
 

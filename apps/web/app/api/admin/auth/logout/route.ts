@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { ADMIN_COOKIE } from "@/lib/admin-auth";
 
+export const dynamic = "force-dynamic";
+
 export async function POST() {
   // JWT is stateless — logout just clears the cookie, no DB needed
   const response = NextResponse.json({ ok: true });

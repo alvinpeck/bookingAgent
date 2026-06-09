@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAdminCredentials, createSession, ADMIN_COOKIE } from "@/lib/admin-auth";
 
+export const dynamic = "force-dynamic";
+
 const JWT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 export async function POST(req: NextRequest) {

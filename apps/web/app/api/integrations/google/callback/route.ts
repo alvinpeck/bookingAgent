@@ -4,6 +4,8 @@ import { eq, and } from "drizzle-orm";
 import { db, integrations, staff, tenants } from "@booking-agent/db";
 import { encrypt } from "@booking-agent/trpc/lib/crypto";
 
+export const dynamic = "force-dynamic";
+
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 

@@ -18,6 +18,8 @@ import { db, bookings, tenants, services, staff } from "@booking-agent/db";
 import { eq, and, gte, lte, isNull, inArray } from "drizzle-orm";
 import { sendBookingReminder } from "@booking-agent/trpc/lib/email";
 
+export const dynamic = "force-dynamic";
+
 const REMINDER_WINDOW_HOURS_1 = 24; // first reminder: 24 h before
 const REMINDER_WINDOW_HOURS_2 = 2;  // second reminder: 2 h before (future)
 const CRON_SECRET = process.env.CRON_SECRET;
