@@ -2,6 +2,8 @@ stages:
   - install
   - validate
   - build
+  - migrate
+  - deploy
   - cron
 
 variables:
@@ -14,6 +16,8 @@ default:
   before_script:
     - npm install -g pnpm@${PNPM_VERSION}
     - pnpm config set store-dir "${CI_PROJECT_DIR}/.pnpm-store"
+
+# ─── Install ──────────────────────────────────────────────────────────────────
 
 install:
   stage: install
@@ -31,6 +35,8 @@ install:
       - apps/web/node_modules/
       - packages/*/node_modules/
     expire_in: 1 hour
+
+# ─── Validate ─────────────────────────────────────────────────────────────────
 
 lint:
   stage: validate
@@ -58,18 +64,25 @@ typecheck:
       - .pnpm-store
     policy: pull
 
+# ─── Build ────────────────────────────────────────────────────────────────────
+# Dummy env vars are used here only to satisfy Next.js at build time.
+# Real secrets are injected at runtime by the hosting platform (Vercel / Railway).
+# AUTH_SECRET and JWT_SECRET need to be at least 32 chars.
+
 build:
   stage: build
   needs: [lint, typecheck]
   variables:
-    # Dummy values so Next.js doesn't crash at build time — real values live in production env
     DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
     DATABASE_URL_DIRECT: "postgresql://dummy:dummy@localhost:5432/dummy"
-    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_dummy"
-    CLERK_SECRET_KEY: "sk_test_dummy"
-    ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
     REDIS_URL: "redis://localhost:6379"
+    AUTH_SECRET: "dummy-auth-secret-value-32-chars-min"
+    NEXTAUTH_URL: "https://example.com"
     NEXT_PUBLIC_APP_URL: "https://example.com"
+    JWT_SECRET: "dummy-jwt-secret-value-32-chars-min-"
+    ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+    CRON_SECRET: "dummy-cron-secret"
+    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_test_dummy"
   script:
     - pnpm build
   cache:
@@ -79,17 +92,132 @@ build:
     paths:
       - .pnpm-store
     policy: pull
-  only:
-    - main
-    - /^release\/.*/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release\/.*/'
+
+# ─── Migrate — QA ─────────────────────────────────────────────────────────────
+# Runs DB migrations against the QA database before deploying.
+# Requires GitLab CI/CD variable: QA_DATABASE_URL_DIRECT
+
+migrate:qa:
+  stage: migrate
+  needs: [build]
+  variables:
+    DATABASE_URL_DIRECT: "$QA_DATABASE_URL_DIRECT"
+  script:
+    - pnpm --filter @booking-agent/db db:migrate
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+    policy: pull
+  environment:
+    name: qa
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ─── Deploy — QA ──────────────────────────────────────────────────────────────
+# Auto-deploys to QA on every push to main.
+# Requires GitLab CI/CD variables: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID_QA
+
+deploy:qa:
+  stage: deploy
+  needs: [migrate:qa]
+  image: node:20-alpine
+  before_script:
+    - npm install -g vercel@latest
+  script:
+    - vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
+    - vercel build --token=$VERCEL_TOKEN
+    - vercel deploy --prebuilt --token=$VERCEL_TOKEN
+      --env AUTH_SECRET=$QA_AUTH_SECRET
+      --env NEXTAUTH_URL=$QA_APP_URL
+      --env NEXT_PUBLIC_APP_URL=$QA_APP_URL
+      --env DATABASE_URL=$QA_DATABASE_URL
+      --env REDIS_URL=$QA_REDIS_URL
+      --env JWT_SECRET=$QA_JWT_SECRET
+      --env ENCRYPTION_KEY=$QA_ENCRYPTION_KEY
+      --env CRON_SECRET=$QA_CRON_SECRET
+      --env RESEND_API_KEY=$QA_RESEND_API_KEY
+      --env EMAIL_FROM=$QA_EMAIL_FROM
+      --env STRIPE_SECRET_KEY=$QA_STRIPE_SECRET_KEY
+      --env STRIPE_WEBHOOK_SECRET=$QA_STRIPE_WEBHOOK_SECRET
+      --env NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$QA_STRIPE_PUBLISHABLE_KEY
+  environment:
+    name: qa
+    url: $QA_APP_URL
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ─── Migrate — Prod ───────────────────────────────────────────────────────────
+# Runs DB migrations against the Prod database before deploying.
+# Requires GitLab CI/CD variable: PROD_DATABASE_URL_DIRECT
+
+migrate:prod:
+  stage: migrate
+  needs: [build]
+  variables:
+    DATABASE_URL_DIRECT: "$PROD_DATABASE_URL_DIRECT"
+  script:
+    - pnpm --filter @booking-agent/db db:migrate
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+    policy: pull
+  environment:
+    name: production
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\/.*/'
+      when: manual
+
+# ─── Deploy — Prod ────────────────────────────────────────────────────────────
+# Manual trigger only — deploy to production from a release/* branch.
+# Requires GitLab CI/CD variables: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
+
+deploy:prod:
+  stage: deploy
+  needs: [migrate:prod]
+  image: node:20-alpine
+  before_script:
+    - npm install -g vercel@latest
+  script:
+    - vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+    - vercel build --prod --token=$VERCEL_TOKEN
+    - vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+      --env AUTH_SECRET=$PROD_AUTH_SECRET
+      --env NEXTAUTH_URL=$PROD_APP_URL
+      --env NEXT_PUBLIC_APP_URL=$PROD_APP_URL
+      --env DATABASE_URL=$PROD_DATABASE_URL
+      --env REDIS_URL=$PROD_REDIS_URL
+      --env JWT_SECRET=$PROD_JWT_SECRET
+      --env ENCRYPTION_KEY=$PROD_ENCRYPTION_KEY
+      --env CRON_SECRET=$PROD_CRON_SECRET
+      --env RESEND_API_KEY=$PROD_RESEND_API_KEY
+      --env EMAIL_FROM=$PROD_EMAIL_FROM
+      --env STRIPE_SECRET_KEY=$PROD_STRIPE_SECRET_KEY
+      --env STRIPE_WEBHOOK_SECRET=$PROD_STRIPE_WEBHOOK_SECRET
+      --env NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$PROD_STRIPE_PUBLISHABLE_KEY
+  environment:
+    name: production
+    url: $PROD_APP_URL
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\/.*/'
+      when: manual
 
 # ─── Scheduled data retention cron ───────────────────────────────────────────
-# Trigger via GitLab CI → Schedules (or an external cron).
+# Trigger via GitLab CI → Schedules.
 # Required CI/CD variables: APP_URL, CRON_SECRET
+
 retention:
   stage: cron
   image: curlimages/curl:latest
-  before_script: []  # override default node before_script
+  before_script: []
   script:
     - |
       echo "Running data retention cleanup..."
