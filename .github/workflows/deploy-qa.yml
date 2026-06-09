@@ -1,4 +1,4 @@
-name: Deploy — QA
+name: Deploy - QA
 
 on:
   push:
@@ -23,11 +23,15 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - name: Restore pnpm cache
-        uses: actions/cache@v4
+      - name: Get pnpm store path
+        id: pnpm-cache
+        run: echo "dir=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v4
         with:
-          path: $(pnpm store path)
+          path: ${{ steps.pnpm-cache.outputs.dir }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
 
       - run: pnpm install --frozen-lockfile
 
@@ -46,23 +50,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to Vercel (preview)
-        uses: amondnet/vercel-action@v25
+      - uses: actions/setup-node@v4
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: ./
-          vercel-args: "--env AUTH_SECRET=${{ secrets.QA_AUTH_SECRET }}
-            --env NEXTAUTH_URL=${{ secrets.QA_APP_URL }}
-            --env NEXT_PUBLIC_APP_URL=${{ secrets.QA_APP_URL }}
-            --env DATABASE_URL=${{ secrets.QA_DATABASE_URL }}
-            --env REDIS_URL=${{ secrets.QA_REDIS_URL }}
-            --env JWT_SECRET=${{ secrets.QA_JWT_SECRET }}
-            --env ENCRYPTION_KEY=${{ secrets.QA_ENCRYPTION_KEY }}
-            --env CRON_SECRET=${{ secrets.QA_CRON_SECRET }}
-            --env RESEND_API_KEY=${{ secrets.QA_RESEND_API_KEY }}
-            --env EMAIL_FROM=${{ secrets.QA_EMAIL_FROM }}
-            --env STRIPE_SECRET_KEY=${{ secrets.QA_STRIPE_SECRET_KEY }}
-            --env STRIPE_WEBHOOK_SECRET=${{ secrets.QA_STRIPE_WEBHOOK_SECRET }}
-            --env NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${{ secrets.QA_STRIPE_PUBLISHABLE_KEY }}"
+          node-version: "20"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy to Vercel (preview)
+        run: |
+          vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+          vercel build --token=${{ secrets.VERCEL_TOKEN }}
+          vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }} \
+            --env AUTH_SECRET="${{ secrets.QA_AUTH_SECRET }}" \
+            --env NEXTAUTH_URL="${{ secrets.QA_APP_URL }}" \
+            --env NEXT_PUBLIC_APP_URL="${{ secrets.QA_APP_URL }}" \
+            --env DATABASE_URL="${{ secrets.QA_DATABASE_URL }}" \
+            --env REDIS_URL="${{ secrets.QA_REDIS_URL }}" \
+            --env JWT_SECRET="${{ secrets.QA_JWT_SECRET }}" \
+            --env ENCRYPTION_KEY="${{ secrets.QA_ENCRYPTION_KEY }}" \
+            --env CRON_SECRET="${{ secrets.QA_CRON_SECRET }}" \
+            --env RESEND_API_KEY="${{ secrets.QA_RESEND_API_KEY }}" \
+            --env EMAIL_FROM="${{ secrets.QA_EMAIL_FROM }}" \
+            --env STRIPE_SECRET_KEY="${{ secrets.QA_STRIPE_SECRET_KEY }}" \
+            --env STRIPE_WEBHOOK_SECRET="${{ secrets.QA_STRIPE_WEBHOOK_SECRET }}" \
+            --env NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="${{ secrets.QA_STRIPE_PUBLISHABLE_KEY }}"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
