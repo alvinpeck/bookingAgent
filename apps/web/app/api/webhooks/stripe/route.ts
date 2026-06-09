@@ -19,7 +19,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", {
   apiVersion: "2026-04-22.dahlia",
 });
 
-const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
+// Fail fast at module load — a missing secret means every webhook silently
+// accepts unauthenticated requests after the empty-string check below.
+if (!process.env.STRIPE_WEBHOOK_SECRET) {
+  throw new Error("STRIPE_WEBHOOK_SECRET env var is required but not set.");
+}
+const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 /** Map Stripe subscription status → our tenant status */
 function stripeStatusToTenantStatus(
@@ -53,6 +58,29 @@ async function syncSubscription(subscription: Stripe.Subscription) {
     return;
   }
 
+  // Cross-check: the customer on the subscription must match our own record.
+  // This prevents metadata-tampering attacks where an attacker sets a different
+  // tenant's ID in the subscription metadata.
+  const customerId = typeof subscription.customer === "string"
+    ? subscription.customer
+    : (subscription.customer as Stripe.Customer | Stripe.DeletedCustomer)?.id;
+
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, tenantId),
+    columns: { id: true, stripeCustomerId: true },
+  });
+  if (!tenant) {
+    console.warn("[stripe/webhook] tenant not found", tenantId);
+    return;
+  }
+  if (tenant.stripeCustomerId && tenant.stripeCustomerId !== customerId) {
+    console.error(
+      "[stripe/webhook] customer ID mismatch — possible metadata tampering",
+      { tenantId, expected: tenant.stripeCustomerId, got: customerId }
+    );
+    return;
+  }
+
   const priceId = subscription.items.data[0]?.price?.id ?? "";
   const plan    = priceId ? priceIdToPlan(priceId) : "starter";
   const status  = stripeStatusToTenantStatus(subscription.status);
@@ -75,6 +103,29 @@ async function syncSubscription(subscription: Stripe.Subscription) {
 async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   const tenantId = subscription.metadata?.tenantId;
   if (!tenantId) return;
+
+  // Same customer-ID cross-check as syncSubscription — prevents an attacker
+  // with their own Stripe account from putting a victim's tenantId in metadata
+  // and cancelling to trigger a plan downgrade.
+  const customerId = typeof subscription.customer === "string"
+    ? subscription.customer
+    : (subscription.customer as Stripe.Customer | Stripe.DeletedCustomer)?.id;
+
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, tenantId),
+    columns: { id: true, stripeCustomerId: true },
+  });
+  if (!tenant) {
+    console.warn("[stripe/webhook] tenant not found on deletion", tenantId);
+    return;
+  }
+  if (tenant.stripeCustomerId && tenant.stripeCustomerId !== customerId) {
+    console.error(
+      "[stripe/webhook] customer ID mismatch on deletion — possible metadata tampering",
+      { tenantId, expected: tenant.stripeCustomerId, got: customerId }
+    );
+    return;
+  }
 
   await db
     .update(tenants)

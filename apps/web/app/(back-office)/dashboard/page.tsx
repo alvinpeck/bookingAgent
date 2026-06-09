@@ -1,7 +1,5 @@
-"use client";
-
 import Link from "next/link";
-import { trpc } from "@/lib/trpc/client";
+import { api } from "@/lib/trpc/server";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,30 +57,22 @@ function PlanBadge({ plan }: { plan: string }) {
   );
 }
 
-// ─── Skeleton ─────────────────────────────────────────────────────────────────
-
-function CardSkeleton() {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 px-5 py-4 animate-pulse">
-      <div className="h-3 w-20 bg-gray-200 rounded mb-3" />
-      <div className="h-8 w-12 bg-gray-100 rounded" />
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function DashboardPage() {
-  const { data: stats,  isLoading: statsLoading  } = trpc.bookings.getStats.useQuery();
-  const { data: usage,  isLoading: usageLoading  } = trpc.billing.getUsage.useQuery();
-  const { data: tenant }                            = trpc.tenant.getCurrent.useQuery();
+export default async function DashboardPage() {
+  // All three share one DB context (React cache) and run in parallel —
+  // data arrives in the first HTML response, no loading skeletons.
+  const [stats, usage, tenant] = await Promise.all([
+    api.bookings.getStats(),
+    api.billing.getUsage(),
+    api.tenant.getCurrent(),
+  ]);
 
-  const tz = (tenant as any)?.timezone ?? "UTC";
-
-  const plan         = usage?.plan ?? "starter";
-  const bookingPct   = usage?.metrics?.bookings?.pct   ?? null;
-  const bookingUsed  = usage?.metrics?.bookings?.used  ?? 0;
-  const bookingLimit = usage?.metrics?.bookings?.limit ?? null;
+  const tz           = (tenant as any)?.timezone ?? "UTC";
+  const plan         = usage.plan;
+  const bookingPct   = usage.metrics.bookings.pct;
+  const bookingUsed  = usage.metrics.bookings.used;
+  const bookingLimit = usage.metrics.bookings.limit;
 
   return (
     <div className="space-y-8">
@@ -123,34 +113,28 @@ export default function DashboardPage() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {statsLoading ? (
-          <><CardSkeleton /><CardSkeleton /><CardSkeleton /></>
-        ) : (
-          <>
-            <StatCard
-              label="Today's bookings"
-              value={stats?.todayCount ?? 0}
-              sub="confirmed & pending"
-              valueColor="text-indigo-600"
-            />
-            <StatCard
-              label="This month"
-              value={stats?.monthCount ?? 0}
-              sub={bookingLimit ? `of ${bookingLimit} quota` : "no monthly cap"}
-              valueColor="text-green-600"
-            />
-            <StatCard
-              label="Awaiting confirmation"
-              value={stats?.pendingCount ?? 0}
-              sub={stats?.pendingCount ? "requires action" : "all clear"}
-              valueColor={(stats?.pendingCount ?? 0) > 0 ? "text-amber-600" : "text-gray-400"}
-            />
-          </>
-        )}
+        <StatCard
+          label="Today's bookings"
+          value={stats.todayCount}
+          sub="confirmed & pending"
+          valueColor="text-indigo-600"
+        />
+        <StatCard
+          label="This month"
+          value={stats.monthCount}
+          sub={bookingLimit ? `of ${bookingLimit} quota` : "no monthly cap"}
+          valueColor="text-green-600"
+        />
+        <StatCard
+          label="Awaiting confirmation"
+          value={stats.pendingCount}
+          sub={stats.pendingCount ? "requires action" : "all clear"}
+          valueColor={stats.pendingCount > 0 ? "text-amber-600" : "text-gray-400"}
+        />
       </div>
 
       {/* Quota progress bar */}
-      {!usageLoading && bookingLimit !== null && (
+      {bookingLimit !== null && (
         <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
@@ -194,13 +178,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {statsLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-16 bg-white rounded-xl border border-gray-200 animate-pulse" />
-            ))}
-          </div>
-        ) : !stats?.upcoming?.length ? (
+        {!stats.upcoming.length ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-10 text-center">
             <p className="text-sm text-gray-400">No confirmed bookings in the next 7 days.</p>
             <Link href="/bookings" className="mt-2 inline-block text-sm text-indigo-600 hover:underline">
@@ -215,12 +193,10 @@ export default function DashboardPage() {
                 href={`/bookings/${b.id}`}
                 className="bg-white rounded-xl border border-gray-200 px-4 py-3 flex items-center gap-4 hover:border-indigo-300 hover:shadow-sm transition-all"
               >
-                {/* Service colour dot */}
                 <div
                   className="w-2.5 h-2.5 rounded-full shrink-0"
                   style={{ backgroundColor: (b as any).service?.colorHex ?? "#6366f1" }}
                 />
-                {/* Date & time */}
                 <div className="w-28 shrink-0">
                   <p className="text-xs font-semibold text-gray-900">
                     {fmtTime(String(b.startsAt), tz)}
@@ -229,7 +205,6 @@ export default function DashboardPage() {
                     {fmtDateShort(String(b.startsAt), tz)}
                   </p>
                 </div>
-                {/* Service + staff */}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate">
                     {(b as any).service?.name ?? "—"}
@@ -238,7 +213,6 @@ export default function DashboardPage() {
                     {(b as any).staff?.displayName ?? "—"}
                   </p>
                 </div>
-                {/* Customer */}
                 <div className="text-right shrink-0">
                   <p className="text-sm text-gray-700 truncate max-w-[140px]">{b.customerName}</p>
                   <p className="text-xs text-gray-400 truncate max-w-[140px]">{b.customerEmail}</p>

@@ -44,16 +44,11 @@ export const tenantRouter = router({
   /**
    * Get the current tenant's profile and plan details.
    */
-  getCurrent: protectedProcedure.query(async ({ ctx }) => {
-    const tenant = await ctx.db.query.tenants.findFirst({
-      where: eq(tenants.id, ctx.tenant.id),
-    });
-
-    if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
-
+  getCurrent: protectedProcedure.query(({ ctx }) => {
+    // ctx.tenant is already loaded by createTRPCContext — no extra DB query needed.
     return {
-      ...tenant,
-      quotas: PLAN_QUOTAS[tenant.plan],
+      ...ctx.tenant,
+      quotas: PLAN_QUOTAS[ctx.tenant.plan],
     };
   }),
 
@@ -173,16 +168,39 @@ export const tenantRouter = router({
   /**
    * Save or overwrite an API key for a service.
    * The value is AES-256-GCM encrypted before storage.
+   * Only services listed in API_KEY_SERVICES are accepted.
    */
   setApiKey: manageIntegrationsProcedure
     .use(withAudit)
     .input(
       z.object({
-        service: z.string().min(1).max(60),
+        service: z.enum(
+          API_KEY_SERVICES.map((s) => s.key) as [string, ...string[]]
+        ),
         value: z.string().min(1),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      // Validate Ollama URLs to prevent SSRF — the URL is used as an outbound
+      // HTTP baseURL, so an attacker could point it at internal infrastructure.
+      if (input.service === "ollama_url") {
+        let parsed: URL;
+        try {
+          parsed = new URL(input.value);
+        } catch {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Ollama URL is not a valid URL." });
+        }
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Ollama URL must use http or https." });
+        }
+        // IPv4 private ranges + IPv6 loopback/link-local/private + 0.0.0.0
+        const privateHost =
+          /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.0\.0\.0|\[::1\]|\[::ffff:|^\[fc|\[fd|\[fe80:)/i;
+        if (privateHost.test(parsed.hostname) && process.env.NODE_ENV === "production") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Ollama URL must not point to a private or link-local address in production." });
+        }
+      }
+
       const settingKey = `${SETTING_PREFIX}${input.service}`;
       const encryptedValue = encrypt(input.value);
 
@@ -216,7 +234,7 @@ export const tenantRouter = router({
    */
   deleteApiKey: manageIntegrationsProcedure
     .use(withAudit)
-    .input(z.object({ service: z.string().min(1).max(60) }))
+    .input(z.object({ service: z.enum(API_KEY_SERVICES.map((s) => s.key) as [string, ...string[]]) }))
     .mutation(async ({ ctx, input }) => {
       const settingKey = `${SETTING_PREFIX}${input.service}`;
 
@@ -246,30 +264,6 @@ export const tenantRouter = router({
       return { success: true };
     }),
 
-  /**
-   * Retrieve a decrypted API key value — for server-side use only.
-   * This procedure is intentionally NOT exposed in a way that returns
-   * the plain value to the browser; call it from Server Components or
-   * API routes that keep the key server-side.
-   */
-  getApiKeyValue: manageIntegrationsProcedure
-    .input(z.object({ service: z.string().min(1).max(60) }))
-    .query(async ({ ctx, input }) => {
-      const settingKey = `${SETTING_PREFIX}${input.service}`;
-      const row = await ctx.db.query.tenantSettings.findFirst({
-        where: and(
-          eq(tenantSettings.tenantId, ctx.tenant.id),
-          eq(tenantSettings.key, settingKey)
-        ),
-      });
-      if (!row) return null;
-      try {
-        return decrypt(row.value as string);
-      } catch {
-        return null;
-      }
-    }),
-
   // ─── Team / member management ─────────────────────────────────────────────
 
   /**
@@ -281,6 +275,19 @@ export const tenantRouter = router({
         eq(tenantUsers.tenantId, ctx.tenant.id),
         eq(tenantUsers.isActive, true),
       ),
+      // userId is the internal auth identity — never expose it to the client
+      // (it could be used to impersonate other users via header injection)
+      columns: {
+        id: true,
+        tenantId: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
       orderBy: (tu, { asc }) => asc(tu.createdAt),
     });
   }),
@@ -435,11 +442,10 @@ export const tenantRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can manage owner-level roles." });
       }
 
-      const [updated] = await ctx.db
+      await ctx.db
         .update(tenantUsers)
         .set({ role: input.role } as any)
-        .where(eq(tenantUsers.id, input.tenantUserId))
-        .returning();
+        .where(eq(tenantUsers.id, input.tenantUserId));
 
       await ctx.audit("user.role_changed", {
         resourceType: "tenant_user",
@@ -448,7 +454,7 @@ export const tenantRouter = router({
         after:        { role: input.role },
       });
 
-      return updated;
+      return { success: true };
     }),
 
   /**

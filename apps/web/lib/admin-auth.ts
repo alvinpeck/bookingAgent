@@ -14,6 +14,7 @@ import { eq, and } from "drizzle-orm";
 import { createHmac, scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { cookies } from "next/headers";
+import { z } from "zod";
 
 const scryptAsync = promisify(scrypt);
 
@@ -21,6 +22,25 @@ export const ADMIN_COOKIE       = "admin_session";
 export const IMPERSONATE_COOKIE = "admin_impersonate";
 const JWT_TTL_SECONDS           = 7 * 24 * 60 * 60; // 7 days
 const IMPERSONATE_TTL_SECONDS   = 4 * 60 * 60;       // 4 hours
+
+// ─── Runtime payload schemas ──────────────────────────────────────────────────
+
+const AdminPayloadSchema = z.object({
+  sub:   z.string().min(1),
+  email: z.string().email(),
+  name:  z.string(),
+  iat:   z.number().int(),
+  exp:   z.number().int(),
+});
+
+const ImpersonatePayloadSchema = z.object({
+  adminId:       z.string().min(1),
+  adminEmail:    z.string().email(),
+  tenantId:      z.string().uuid(),
+  virtualUserId: z.string().min(1),
+  iat:           z.number().int(),
+  exp:           z.number().int(),
+});
 
 // ─── JWT helpers (no external library) ───────────────────────────────────────
 
@@ -78,10 +98,12 @@ export function verifyJwt(token: string): AdminPayload | null {
     if (sigBuf.length !== expBuf.length) return null;
     if (!timingSafeEqual(sigBuf, expBuf)) return null;
 
-    // Decode payload
-    const payload = JSON.parse(
-      Buffer.from(body, "base64url").toString("utf8")
-    ) as AdminPayload;
+    // Decode and validate payload shape at runtime
+    const raw = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    const parsed = AdminPayloadSchema.safeParse(raw);
+    if (!parsed.success) return null;
+    // Cast is safe — shape is guaranteed by the Zod parse above
+    const payload = parsed.data as AdminPayload;
 
     // Check expiry
     if (Math.floor(Date.now() / 1000) > payload.exp) return null;
@@ -166,7 +188,10 @@ export function verifyImpersonateJwt(token: string): ImpersonatePayload | null {
     const expBuf = Buffer.from(expected, "base64url");
     if (sigBuf.length !== expBuf.length) return null;
     if (!timingSafeEqual(sigBuf, expBuf)) return null;
-    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as ImpersonatePayload;
+    const raw = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    const parsed = ImpersonatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return null;
+    const payload = parsed.data as ImpersonatePayload;
     if (Math.floor(Date.now() / 1000) > payload.exp) return null;
     return payload;
   } catch {

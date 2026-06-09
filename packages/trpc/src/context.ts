@@ -58,9 +58,12 @@ export async function createTRPCContext(
     opts.req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const userAgent = opts.req.headers.get("user-agent") ?? null;
 
-  // Auth data injected by the route handler (preferred) or fallback to headers
-  const userId   = auth?.userId   ?? opts.req.headers.get("x-user-id");
-  const tenantId = auth?.tenantId ?? opts.req.headers.get("x-tenant-id");
+  // Auth data is ONLY accepted from the server-side `auth` argument.
+  // When `auth` is provided (even with null values) we never fall back to
+  // client-supplied headers — that path allowed header-injection impersonation
+  // because `null ?? req.headers.get("x-user-id")` resolved to the header.
+  const userId   = auth !== undefined ? auth.userId   : null;
+  const tenantId = auth !== undefined ? auth.tenantId : null;
 
   // Not logged in — return public context (used by booking site routes)
   if (!userId || !tenantId) {

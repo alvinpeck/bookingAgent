@@ -98,9 +98,13 @@ export async function POST(
   const chatId = update.message?.chat?.id;
   const updateIdStr = String(update.update_id);
 
-  // Idempotency check
+  // Idempotency check — scoped to this tenant so update_id collisions between
+  // different bots/tenants don't cause cross-tenant false positives.
   const alreadyProcessed = await db.query.webhookEvents.findFirst({
-    where: eq(webhookEvents.externalEventId, updateIdStr),
+    where: and(
+      eq(webhookEvents.externalEventId, updateIdStr),
+      eq(webhookEvents.tenantId, channel.tenantId)
+    ),
     columns: { id: true },
   });
 

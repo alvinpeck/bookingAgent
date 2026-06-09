@@ -12,13 +12,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import {
   getAdminSession,
   signImpersonateJwt,
   IMPERSONATE_COOKIE,
 } from "@/lib/admin-auth";
-import { db, tenants, tenantUsers } from "@booking-agent/db";
+import { db, tenants, tenantUsers, auditLogs } from "@booking-agent/db";
 import { eq, and } from "drizzle-orm";
 
 export async function POST(req: NextRequest) {
@@ -102,6 +102,31 @@ export async function POST(req: NextRequest) {
     maxAge:    4 * 60 * 60,
     secure:    process.env.NODE_ENV === "production",
   });
+
+  // ── 7. Audit log ────────────────────────────────────────────────────────────
+  // Every impersonation event is recorded for accountability.
+  try {
+    const headerStore = await headers();
+    const ipAddress   = headerStore.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+    const userAgent   = headerStore.get("user-agent") ?? null;
+
+    await db.insert(auditLogs).values({
+      tenantId,
+      action:       "admin.impersonate" as any,
+      actorId:      `admin:${admin.sub}`,
+      actorEmail:   admin.email,
+      actorRole:    "superadmin",
+      resourceType: "tenant",
+      resourceId:   tenantId,
+      metadata:     { adminId: admin.sub, adminEmail: admin.email } as any,
+      ipAddress,
+      userAgent,
+      requestId:    crypto.randomUUID(),
+    } as any);
+  } catch (auditErr) {
+    // Audit failure must never block the impersonation itself
+    console.error("[enter-portal] Failed to write audit log:", auditErr);
+  }
 
   return NextResponse.json({ ok: true });
 }

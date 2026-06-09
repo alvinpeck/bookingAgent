@@ -130,39 +130,30 @@ export const billingRouter = router({
    * Get current subscription info from Stripe (or DB fallback).
    */
   getSubscription: manageBillingProcedure.query(async ({ ctx }) => {
-    const tenant = await ctx.db.query.tenants.findFirst({
-      where: eq(tenants.id, ctx.tenant.id),
-      columns: {
-        plan: true,
-        stripeCustomerId: true,
-        stripeSubscriptionId: true,
-        currentPeriodEnd: true,
-        status: true,
-      },
-    });
-
-    if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
+    // ctx.tenant already has all the fields we need — no extra DB query.
+    const { plan, status, stripeCustomerId, stripeSubscriptionId, currentPeriodEnd } =
+      ctx.tenant as any;
 
     let subscription = null;
-    if (tenant.stripeSubscriptionId) {
+    if (stripeSubscriptionId) {
       try {
-        const sub = await stripe.subscriptions.retrieve(tenant.stripeSubscriptionId);
+        const sub = await stripe.subscriptions.retrieve(stripeSubscriptionId);
         subscription = {
           status: sub.status,
           currentPeriodEnd: new Date((sub as any).current_period_end * 1000),
           cancelAtPeriodEnd: sub.cancel_at_period_end,
         };
       } catch {
-        // Stripe unreachable or subscription not found — fall back to DB
+        // Stripe unreachable or subscription not found — fall back to DB values
       }
     }
 
     return {
-      plan: tenant.plan,
-      status: tenant.status,
-      stripeCustomerId: tenant.stripeCustomerId,
-      stripeSubscriptionId: tenant.stripeSubscriptionId,
-      currentPeriodEnd: tenant.currentPeriodEnd,
+      plan,
+      status,
+      stripeCustomerId,
+      stripeSubscriptionId,
+      currentPeriodEnd,
       subscription,
     };
   }),
@@ -188,17 +179,11 @@ export const billingRouter = router({
         });
       }
 
-      // Ensure the tenant has a Stripe customer
-      const tenant = await ctx.db.query.tenants.findFirst({
-        where: eq(tenants.id, ctx.tenant.id),
-        columns: { stripeCustomerId: true, name: true },
-      });
-      if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
-
-      let customerId = tenant.stripeCustomerId;
+      // ctx.tenant already has stripeCustomerId and name — no extra DB query.
+      let customerId = (ctx.tenant as any).stripeCustomerId as string | null;
       if (!customerId) {
         const customer = await stripe.customers.create({
-          name:     tenant.name,
+          name:     ctx.tenant.name,
           metadata: { tenantId: ctx.tenant.id },
         });
         customerId = customer.id;
@@ -231,13 +216,9 @@ export const billingRouter = router({
   createPortalSession: manageBillingProcedure
     .input(z.object({ returnUrl: z.string().url() }))
     .mutation(async ({ ctx, input }) => {
-      const tenant = await ctx.db.query.tenants.findFirst({
-        where: eq(tenants.id, ctx.tenant.id),
-        columns: { stripeCustomerId: true },
-      });
-      if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
+      const stripeCustomerId = (ctx.tenant as any).stripeCustomerId as string | null;
 
-      if (!tenant.stripeCustomerId) {
+      if (!stripeCustomerId) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "No Stripe customer found. Please set up a subscription first.",
@@ -245,7 +226,7 @@ export const billingRouter = router({
       }
 
       const session = await stripe.billingPortal.sessions.create({
-        customer:   tenant.stripeCustomerId,
+        customer:   stripeCustomerId,
         return_url: input.returnUrl,
       });
 
