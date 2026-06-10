@@ -299,6 +299,21 @@ export const availabilityRouter = router({
 
       if (!tenant) throw new TRPCError({ code: "NOT_FOUND" });
 
+      // Verify service and staff belong to this tenant (prevents cross-tenant hold injection)
+      const [svc, stf] = await Promise.all([
+        ctx.db.query.services.findFirst({
+          where: and(eq(services.id, input.serviceId), eq(services.tenantId, tenant.id)),
+          columns: { id: true },
+        }),
+        ctx.db.query.staff.findFirst({
+          where: and(eq(staffTable.id, input.staffId), eq(staffTable.tenantId, tenant.id)),
+          columns: { id: true },
+        }),
+      ]);
+
+      if (!svc) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid service." });
+      if (!stf) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid staff member." });
+
       // Check for existing hold on this slot
       const existing = await ctx.db.query.slotHolds.findFirst({
         where: and(

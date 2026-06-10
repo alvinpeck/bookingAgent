@@ -14,6 +14,8 @@ import {
   slotHolds,
   bookingStatusEnum,
   bookingChannelEnum,
+  services,
+  staff,
 } from "@booking-agent/db";
 import {
   sendBookingConfirmation,
@@ -200,6 +202,35 @@ export const bookingsRouter = router({
           message: "Your slot reservation has expired. Please select the time again.",
         });
       }
+
+      // Verify hold params match request — prevents reusing a hold token
+      // with different serviceId/staffId/time than what was originally held
+      if (
+        hold.serviceId !== input.serviceId ||
+        hold.staffId   !== input.staffId   ||
+        hold.slotStartAt.getTime() !== new Date(input.startsAt).getTime() ||
+        hold.slotEndAt.getTime()   !== new Date(input.endsAt).getTime()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Booking details do not match your reservation. Please start again.",
+        });
+      }
+
+      // Verify service and staff belong to this tenant
+      const [svc, stf] = await Promise.all([
+        ctx.db.query.services.findFirst({
+          where: and(eq(services.id, input.serviceId), eq(services.tenantId, tenant.id)),
+          columns: { id: true },
+        }),
+        ctx.db.query.staff.findFirst({
+          where: and(eq(staff.id, input.staffId), eq(staff.tenantId, tenant.id)),
+          columns: { id: true },
+        }),
+      ]);
+
+      if (!svc) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid service." });
+      if (!stf) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid staff member." });
 
       const booking = await createBookingTransaction({
         db: ctx.db,
