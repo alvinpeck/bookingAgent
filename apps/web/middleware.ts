@@ -31,7 +31,7 @@ function isBackOffice(pathname: string) {
 
 function isPublic(pathname: string) {
   return (
-    pathname.startsWith("/book") ||
+    pathname.startsWith("/book") ||  // public booking + cancel pages
     pathname.startsWith("/api/trpc") ||
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/integrations/google/callback") ||

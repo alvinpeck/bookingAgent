@@ -16,6 +16,7 @@ import {
   bookingChannelEnum,
   services,
   staff,
+  tenants,
 } from "@booking-agent/db";
 import {
   sendBookingConfirmation,
@@ -641,6 +642,139 @@ export const bookingsRouter = router({
       upcoming:      upcomingRows,
     };
   }),
+
+  /**
+   * Look up a booking by ID for customer self-service.
+   * The customer must supply their email to verify ownership of the booking.
+   * Uses publicProcedure — rate-limited, no auth required.
+   */
+  getByCustomer: publicProcedure
+    .input(
+      z.object({
+        bookingId:     z.string().uuid(),
+        customerEmail: z.string().email().max(254),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const booking = await ctx.db.query.bookings.findFirst({
+        where: eq(bookings.id, input.bookingId),
+      });
+
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Booking not found." });
+
+      // Verify email ownership (case-insensitive)
+      if (booking.customerEmail.toLowerCase() !== input.customerEmail.toLowerCase()) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Booking not found." });
+      }
+
+      const [svc, stf, tenant] = await Promise.all([
+        ctx.db.query.services.findFirst({
+          where: eq(services.id, booking.serviceId),
+          columns: { name: true, colorHex: true },
+        }),
+        ctx.db.query.staff.findFirst({
+          where: eq(staff.id, booking.staffId),
+          columns: { displayName: true },
+        }),
+        ctx.db.query.tenants.findFirst({
+          where: eq(tenants.id, booking.tenantId),
+          columns: { name: true, timezone: true },
+        }),
+      ]);
+
+      return {
+        id:            booking.id,
+        status:        booking.status,
+        customerName:  booking.customerName,
+        customerEmail: booking.customerEmail,
+        startsAt:      booking.startsAt,
+        endsAt:        booking.endsAt,
+        timezone:      tenant?.timezone ?? "UTC",
+        businessName:  tenant?.name ?? "",
+        serviceName:   svc?.name ?? "Service",
+        staffName:     stf?.displayName ?? "Staff",
+        serviceColor:  svc?.colorHex ?? "#6366f1",
+      };
+    }),
+
+  /**
+   * Customer self-service cancellation.
+   * The customer must supply their email to verify they own the booking.
+   * Cancellations are only allowed if the appointment hasn't started yet.
+   * Uses publicProcedure — rate-limited, no auth required.
+   */
+  cancelByCustomer: publicProcedure
+    .input(
+      z.object({
+        bookingId:     z.string().uuid(),
+        customerEmail: z.string().email().max(254),
+        reason:        z.string().max(500).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const booking = await ctx.db.query.bookings.findFirst({
+        where: eq(bookings.id, input.bookingId),
+      });
+
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Booking not found." });
+
+      // Verify email ownership (case-insensitive)
+      if (booking.customerEmail.toLowerCase() !== input.customerEmail.toLowerCase()) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Booking not found." });
+      }
+
+      // Only allow cancellation of confirmed or pending bookings
+      if (!["confirmed", "pending"].includes(booking.status)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `This booking cannot be cancelled (status: ${booking.status}).`,
+        });
+      }
+
+      // Must cancel before the appointment starts
+      if (new Date() >= booking.startsAt) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This appointment has already started or passed and cannot be cancelled online.",
+        });
+      }
+
+      const tenant = await ctx.db.query.tenants.findFirst({
+        where: eq(tenants.id, booking.tenantId),
+        columns: { id: true, name: true, timezone: true },
+      });
+
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(bookings)
+          .set({ status: "cancelled", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, input.bookingId));
+
+        await tx.insert(bookingStatusHistory).values({
+          tenantId:   booking.tenantId,
+          bookingId:  input.bookingId,
+          fromStatus: booking.status,
+          toStatus:   "cancelled",
+          changedBy:  `customer:${booking.customerEmail}`,
+          reason:     input.reason ?? "Cancelled by customer",
+        } as any);
+      });
+
+      // Send cancellation email (best-effort)
+      sendBookingCancellationForBooking(
+        ctx.db,
+        booking,
+        { name: tenant?.name ?? "", timezone: tenant?.timezone ?? null },
+        input.reason ?? "Cancelled by customer"
+      ).catch((err) => console.error("[email] customer cancellation email failed:", err));
+
+      // Remove Google Calendar event (best-effort)
+      deleteBookingFromCalendar(ctx.db, booking).catch(
+        (err) => console.error("[gcal] customer cancel delete event failed:", err)
+      );
+
+      return { success: true };
+    }),
 });
 
 // ─── Email helpers ────────────────────────────────────────────────────────────

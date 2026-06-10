@@ -92,10 +92,13 @@ export async function sendBookingConfirmation(d: BookingEmailData): Promise<void
     return;
   }
   try {
+    const base      = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+    const cancelUrl = `${base}/book/cancel/${esc(d.bookingId)}`;
     const body = `
 <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#111827">Your booking is confirmed ✓</h1>
 <p style="margin:0 0 24px;font-size:14px;color:#6b7280">Hi ${esc(d.customerName)}, your appointment at <strong>${esc(d.businessName)}</strong> is confirmed.</p>
-${bookingDetailsBlock(d)}`;
+${bookingDetailsBlock(d)}
+<p style="margin:20px 0 0;font-size:12px;color:#9ca3af">Need to cancel? <a href="${cancelUrl}" style="color:#4f46e5">Cancel appointment</a></p>`;
     const { error } = await client.emails.send({
       from:    FROM_EMAIL,
       to:      d.customerEmail,
