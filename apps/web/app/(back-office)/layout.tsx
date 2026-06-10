@@ -19,6 +19,7 @@ const ADMIN_NAV = [
   { href: "/availability",      label: "Availability" },
   { href: "/staff",             label: "Staff" },
   { href: "/channels",          label: "Channels" },
+  { href: "/conversations",     label: "Conversations" },
   { href: "/agent",             label: "AI Agent" },
   { href: "/integrations",      label: "Integrations" },
   { href: "/usage",             label: "Usage" },

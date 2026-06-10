@@ -16,6 +16,7 @@ const BACK_OFFICE_PATHS = [
   "/staff",
   "/integrations",
   "/channels",
+  "/conversations",
   "/settings",
   "/audit",
   "/usage",
