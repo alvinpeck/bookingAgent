@@ -17,6 +17,7 @@ const BACK_OFFICE_PATHS = [
   "/integrations",
   "/channels",
   "/conversations",
+  "/agent",
   "/settings",
   "/audit",
   "/usage",
@@ -43,6 +44,8 @@ function isPublic(pathname: string) {
     pathname.startsWith("/invite") ||
     pathname.startsWith("/admin") ||
     pathname.startsWith("/onboarding") ||
+    pathname.startsWith("/terms") ||
+    pathname.startsWith("/privacy") ||
     pathname === "/"
   );
 }

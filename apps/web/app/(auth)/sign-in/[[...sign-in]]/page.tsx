@@ -244,6 +244,15 @@ function SignInForm() {
               : <>Already have an account?{" "}<button onClick={() => switchTab("signin")} className="text-indigo-600 hover:underline">Sign in</button></>
             }
           </p>
+
+          {tab === "register" && (
+            <p className="text-center text-xs text-gray-400">
+              By creating an account you agree to our{" "}
+              <a href="/terms" className="text-indigo-600 hover:underline">Terms</a>
+              {" "}and{" "}
+              <a href="/privacy" className="text-indigo-600 hover:underline">Privacy Policy</a>.
+            </p>
+          )}
         </div>
       </div>
     </div>

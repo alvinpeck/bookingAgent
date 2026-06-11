@@ -13,6 +13,7 @@
     "./lib/whatsapp-send": "./src/lib/whatsapp-send.ts",
     "./lib/logger": "./src/lib/logger.ts",
     "./lib/email": "./src/lib/email/index.ts",
+    "./lib/sms": "./src/lib/sms.ts",
     "./lib/usage": {
       "types": "./src/lib/usage.ts",
       "default": "./src/lib/usage.ts"

@@ -251,9 +251,9 @@ export default function PrivacyPolicyPage() {
 
       {/* Footer */}
       <div className="border-t border-gray-100 py-8">
-        <div className="mx-auto max-w-3xl px-6 flex items-center justify-between text-sm text-gray-400">
-          <span>Booking Agent &mdash; [Your Business Name]</span>
-          <span>Last updated 6 May 2026</span>
+        <div className="mx-auto max-w-3xl px-6 flex gap-6 text-sm text-gray-400">
+          <a href="/terms" className="hover:text-gray-700">Terms of Service</a>
+          <a href="/" className="hover:text-gray-700">Home</a>
         </div>
       </div>
     </main>

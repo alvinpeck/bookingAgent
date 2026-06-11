@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import { db, bookings, tenants, services, staff } from "@booking-agent/db";
 import { eq, and, gte, lte, isNull, inArray } from "drizzle-orm";
 import { sendBookingReminder } from "@booking-agent/trpc/lib/email";
+import { sendSmsReminder } from "@booking-agent/trpc/lib/sms";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,7 @@ export async function GET(req: Request) {
         staffId: true,
         customerName: true,
         customerEmail: true,
+        customerPhone: true,
         startsAt: true,
         endsAt: true,
       },
@@ -101,7 +103,7 @@ export async function GET(req: Request) {
         );
 
         try {
-          await sendBookingReminder({
+          const reminderData = {
             customerName:  booking.customerName,
             customerEmail: booking.customerEmail,
             businessName:  tenant.name,
@@ -112,7 +114,24 @@ export async function GET(req: Request) {
             timezone:      tenant.timezone ?? "UTC",
             bookingId:     booking.id,
             minutesBefore,
-          });
+          };
+
+          // Email reminder (always attempted)
+          await sendBookingReminder(reminderData);
+
+          // SMS reminder (fire-and-forget, only if customer has a phone)
+          if (booking.customerPhone) {
+            sendSmsReminder(booking.tenantId, {
+              to:           booking.customerPhone,
+              customerName: booking.customerName,
+              businessName: tenant.name,
+              serviceName:  serviceMap.get(booking.serviceId) ?? "Your service",
+              startsAt:     booking.startsAt,
+              timezone:     tenant.timezone ?? "UTC",
+              bookingId:    booking.id,
+              minutesBefore,
+            }).catch((err) => console.error("[sms] reminder failed:", err));
+          }
 
           // Mark reminder as sent
           await db

@@ -55,7 +55,10 @@ async function refreshAccessToken(refreshToken: string): Promise<{
     throw new Error(`Token refresh failed: ${res.status} ${body}`);
   }
 
-  const json = (await res.json()) as { access_token: string; expires_in: number };
+  const json = (await res.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
   return {
     accessToken: json.access_token,
     expiresAt: new Date(Date.now() + json.expires_in * 1000),
@@ -68,7 +71,7 @@ async function refreshAccessToken(refreshToken: string): Promise<{
  */
 export async function getAccessToken(
   integrationId: string,
-  db: DB
+  db: DB,
 ): Promise<string> {
   const integration = await db.query.integrations.findFirst({
     where: eq(integrations.id, integrationId),
@@ -123,7 +126,7 @@ export async function getFreeBusy(
   accessToken: string,
   calendarId: string,
   timeMin: Date,
-  timeMax: Date
+  timeMax: Date,
 ): Promise<FreeBusyInterval[]> {
   const res = await fetch(`${GCAL_BASE}/freeBusy`, {
     method: "POST",
@@ -141,7 +144,10 @@ export async function getFreeBusy(
   if (!res.ok) return [];
 
   const json = (await res.json()) as {
-    calendars?: Record<string, { busy?: Array<{ start: string; end: string }> }>;
+    calendars?: Record<
+      string,
+      { busy?: Array<{ start: string; end: string }> }
+    >;
   };
 
   const busy = json.calendars?.[calendarId]?.busy ?? [];
@@ -153,7 +159,7 @@ export async function getFreeBusy(
 export async function createCalendarEvent(
   accessToken: string,
   calendarId: string,
-  event: GCalEvent
+  event: GCalEvent,
 ): Promise<string> {
   const res = await fetch(
     `${GCAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
@@ -164,7 +170,7 @@ export async function createCalendarEvent(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(event),
-    }
+    },
   );
 
   if (!res.ok) {
@@ -179,14 +185,14 @@ export async function createCalendarEvent(
 export async function deleteCalendarEvent(
   accessToken: string,
   calendarId: string,
-  eventId: string
+  eventId: string,
 ): Promise<void> {
   const res = await fetch(
     `${GCAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
     {
       method: "DELETE",
       headers: { Authorization: `Bearer ${accessToken}` },
-    }
+    },
   );
 
   // 404 = already deleted, treat as success
@@ -197,7 +203,7 @@ export async function deleteCalendarEvent(
 }
 
 export async function listCalendars(
-  accessToken: string
+  accessToken: string,
 ): Promise<Array<{ id: string; summary: string; primary?: boolean }>> {
   const res = await fetch(`${GCAL_BASE}/users/me/calendarList`, {
     headers: { Authorization: `Bearer ${accessToken}` },

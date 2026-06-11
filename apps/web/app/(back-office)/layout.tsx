@@ -24,8 +24,9 @@ const ADMIN_NAV = [
   { href: "/integrations",      label: "Integrations" },
   { href: "/usage",             label: "Usage" },
   { href: "/billing",           label: "Billing" },
-  { href: "/settings",          label: "Settings" },
-  { href: "/settings/api-keys", label: "API Keys" },
+  { href: "/settings",               label: "Settings" },
+  { href: "/settings/booking-link",  label: "Booking Link" },
+  { href: "/settings/api-keys",      label: "API Keys" },
   { href: "/audit",             label: "Audit Log" },
 ];
 
