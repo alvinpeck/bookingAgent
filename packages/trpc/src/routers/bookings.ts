@@ -22,6 +22,7 @@ import {
   sendBookingConfirmation,
   sendBookingCancellation,
 } from "../lib/email";
+import { stripe } from "../lib/stripe";
 
 // ─── Shared validators ────────────────────────────────────────────────────────
 
@@ -222,7 +223,7 @@ export const bookingsRouter = router({
       const [svc, stf] = await Promise.all([
         ctx.db.query.services.findFirst({
           where: and(eq(services.id, input.serviceId), eq(services.tenantId, tenant.id)),
-          columns: { id: true },
+          columns: { id: true, name: true, slug: true, price: true, currency: true, requiresPayment: true },
         }),
         ctx.db.query.staff.findFirst({
           where: and(eq(staff.id, input.staffId), eq(staff.tenantId, tenant.id)),
@@ -233,24 +234,88 @@ export const bookingsRouter = router({
       if (!svc) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid service." });
       if (!stf) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid staff member." });
 
+      // Determine if we need Stripe Checkout
+      const needsPayment =
+        svc.requiresPayment &&
+        svc.price &&
+        parseFloat(svc.price) > 0 &&
+        tenant.stripeConnectAccountId &&
+        tenant.stripeConnectOnboardingComplete;
+
       const booking = await createBookingTransaction({
         db: ctx.db,
         tenantId: tenant.id,
         input: input as any,
         channel: input.channel as any,
         holdToken: input.holdToken as any,
+        initialStatus: needsPayment ? "pending" : "confirmed",
+        paymentStatus: needsPayment ? "unpaid" : null,
       });
 
-      // Write to Google Calendar (best-effort, non-blocking)
+      if (needsPayment) {
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+        const session = await stripe.checkout.sessions.create({
+          mode: "payment",
+          line_items: [{
+            price_data: {
+              currency: (svc.currency ?? "usd").toLowerCase(),
+              product_data: { name: svc.name },
+              unit_amount: Math.round(parseFloat(svc.price!) * 100),
+            },
+            quantity: 1,
+          }],
+          payment_intent_data: {
+            transfer_data: { destination: tenant.stripeConnectAccountId! },
+          },
+          success_url: `${appUrl}/book/${input.tenantSlug}/${svc.slug}/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url:  `${appUrl}/book/${input.tenantSlug}/${svc.slug}?cancelled=1`,
+          customer_email: input.customerEmail,
+          metadata: { bookingId: booking.id },
+          expires_at: Math.floor(Date.now() / 1000) + 30 * 60, // 30 min
+        });
+
+        // Store session ID on the booking
+        await ctx.db
+          .update(bookings)
+          .set({ stripeCheckoutSessionId: session.id } as any)
+          .where(eq(bookings.id, booking.id));
+
+        return { ...booking, checkoutUrl: session.url! };
+      }
+
+      // Free flow — confirm immediately
       writeBookingToCalendar(ctx.db, booking, tenant.timezone ?? "UTC").catch(
         (err) => console.error("[gcal] write-back failed:", err)
       );
-
-      // Send confirmation email (best-effort, non-blocking)
       sendBookingConfirmationForBooking(ctx.db, booking, tenant).catch(
         (err) => console.error("[email] confirmation failed:", err)
       );
 
+      return { ...booking, checkoutUrl: null };
+    }),
+
+  /**
+   * Look up a booking by its Stripe Checkout session ID.
+   * Used by the post-payment success page — only exposes safe display fields.
+   */
+  getPublicByCheckoutSession: publicProcedure
+    .input(z.object({ sessionId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const booking = await ctx.db.query.bookings.findFirst({
+        where: eq((bookings as any).stripeCheckoutSessionId, input.sessionId),
+        columns: {
+          id: true,
+          customerName: true,
+          customerEmail: true,
+          startsAt: true,
+          endsAt: true,
+          status: true,
+          paymentStatus: true,
+          serviceId: true,
+          staffId: true,
+        },
+      });
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND" });
       return booking;
     }),
 
@@ -835,6 +900,8 @@ async function createBookingTransaction({
   input,
   channel,
   holdToken,
+  initialStatus = "confirmed",
+  paymentStatus = null,
 }: {
   db: import("@booking-agent/db").DB;
   tenantId: string;
@@ -851,6 +918,8 @@ async function createBookingTransaction({
   };
   channel: typeof bookingChannelEnum.enumValues[number];
   holdToken: string | null;
+  initialStatus?: "confirmed" | "pending";
+  paymentStatus?: "unpaid" | "paid" | "refunded" | "waived" | null;
 }) {
   return db.transaction(async (tx) => {
     // STEP 1: Lock the staff row to serialise concurrent booking writes
@@ -891,9 +960,10 @@ async function createBookingTransaction({
         internalNote: input.internalNote ?? null,
         startsAt: new Date(input.startsAt),
         endsAt: new Date(input.endsAt),
-        status: "confirmed",
+        status: initialStatus,
         channel,
         holdToken,
+        paymentStatus: paymentStatus ?? null,
       } as any)
       .returning();
 
@@ -902,7 +972,7 @@ async function createBookingTransaction({
       tenantId,
       bookingId: booking!.id,
       fromStatus: null,
-      toStatus: "confirmed",
+      toStatus: initialStatus,
       changedBy: channel === "back_office" ? "back_office" : channel,
     } as any);
 

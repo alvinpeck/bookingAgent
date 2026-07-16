@@ -38,58 +38,6 @@ function defaultSchedule(): Record<DayKey, DayState> {
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function offsetDay(n: number) { return new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10); }
 
-// ─── Country list (Nager.Date supported country codes) ───────────────────────
-
-const COUNTRIES = [
-  { code: "AU", name: "Australia" },
-  { code: "AT", name: "Austria" },
-  { code: "BE", name: "Belgium" },
-  { code: "BR", name: "Brazil" },
-  { code: "CA", name: "Canada" },
-  { code: "CN", name: "China" },
-  { code: "HR", name: "Croatia" },
-  { code: "CZ", name: "Czech Republic" },
-  { code: "DK", name: "Denmark" },
-  { code: "EG", name: "Egypt" },
-  { code: "FI", name: "Finland" },
-  { code: "FR", name: "France" },
-  { code: "DE", name: "Germany" },
-  { code: "GR", name: "Greece" },
-  { code: "HK", name: "Hong Kong" },
-  { code: "HU", name: "Hungary" },
-  { code: "IN", name: "India" },
-  { code: "ID", name: "Indonesia" },
-  { code: "IE", name: "Ireland" },
-  { code: "IL", name: "Israel" },
-  { code: "IT", name: "Italy" },
-  { code: "JP", name: "Japan" },
-  { code: "MY", name: "Malaysia" },
-  { code: "MX", name: "Mexico" },
-  { code: "NL", name: "Netherlands" },
-  { code: "NZ", name: "New Zealand" },
-  { code: "NG", name: "Nigeria" },
-  { code: "NO", name: "Norway" },
-  { code: "PH", name: "Philippines" },
-  { code: "PL", name: "Poland" },
-  { code: "PT", name: "Portugal" },
-  { code: "RO", name: "Romania" },
-  { code: "SA", name: "Saudi Arabia" },
-  { code: "SG", name: "Singapore" },
-  { code: "ZA", name: "South Africa" },
-  { code: "KR", name: "South Korea" },
-  { code: "ES", name: "Spain" },
-  { code: "SE", name: "Sweden" },
-  { code: "CH", name: "Switzerland" },
-  { code: "TW", name: "Taiwan" },
-  { code: "TH", name: "Thailand" },
-  { code: "TR", name: "Turkey" },
-  { code: "UA", name: "Ukraine" },
-  { code: "AE", name: "United Arab Emirates" },
-  { code: "GB", name: "United Kingdom" },
-  { code: "US", name: "United States" },
-  { code: "VN", name: "Vietnam" },
-];
-
 // ─── Weekly Schedule ──────────────────────────────────────────────────────────
 
 function WeeklySchedule({ staffId }: { staffId: string }) {
@@ -349,9 +297,32 @@ function HolidayCalendar() {
   const utils = trpc.useUtils();
   const currentYear = new Date().getFullYear();
 
+  const { data: availableCountries, isLoading: countriesLoading } =
+    trpc.availability.listAvailableCountries.useQuery(undefined, { staleTime: Infinity });
+  const countries = availableCountries ?? [];
+
   const [country, setCountry]   = useState("US");
   const [year, setYear]         = useState(currentYear);
   const [previewing, setPreviewing] = useState(false);
+
+  // Manual entry state
+  const [manualCountry, setManualCountry] = useState("");
+  const [manualDate, setManualDate] = useState("");
+  const [manualName, setManualName] = useState("");
+  const [manualList, setManualList] = useState<Array<{ date: string; name: string }>>([]);
+
+  function addManualEntry(e: React.FormEvent) {
+    e.preventDefault();
+    if (!manualDate) return;
+    if (manualList.some((h) => h.date === manualDate)) return; // dedupe
+    setManualList((l) => [...l, { date: manualDate, name: manualName }]);
+    setManualDate("");
+    setManualName("");
+  }
+
+  function removeManualEntry(date: string) {
+    setManualList((l) => l.filter((h) => h.date !== date));
+  }
 
   // Reset preview when country/year changes
   function handleCountryChange(code: string) {
@@ -375,7 +346,15 @@ function HolidayCalendar() {
     },
   });
 
-  const countryName = COUNTRIES.find((c) => c.code === country)?.name ?? country;
+  const blockManualMutation = trpc.availability.blockDatesForAllStaff.useMutation({
+    onSuccess: () => {
+      utils.availability.getOverrides.invalidate();
+      setManualList([]);
+      setManualCountry("");
+    },
+  });
+
+  const countryName = countries.find((c) => c.code === country)?.name ?? country;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6">
@@ -395,8 +374,10 @@ function HolidayCalendar() {
             value={country}
             onChange={(e) => handleCountryChange(e.target.value)}
             className={inputCls}
+            disabled={countriesLoading}
           >
-            {COUNTRIES.map((c) => (
+            {countriesLoading && <option value="">Loading…</option>}
+            {countries.map((c) => (
               <option key={c.code} value={c.code}>
                 {c.name}
               </option>
@@ -483,9 +464,105 @@ function HolidayCalendar() {
         <p className="text-sm text-red-600 mt-2">{importMutation.error.message}</p>
       )}
 
-      <p className="text-xs text-gray-400">
+      {/* Manual entry — for countries not covered by Nager.Date */}
+      <div className="border-t border-gray-100 pt-5 mt-5">
+        <p className="text-xs font-medium text-gray-600 mb-3">
+          Country not listed? Add holidays manually:
+        </p>
+        <div className="mb-3">
+          <Field label="Country / label">
+            <input
+              type="text"
+              placeholder="e.g. Malaysia"
+              value={manualCountry}
+              onChange={(e) => setManualCountry(e.target.value)}
+              className={`${inputCls} w-44`}
+            />
+          </Field>
+        </div>
+        <form onSubmit={addManualEntry} className="flex flex-wrap gap-2 items-end mb-3">
+          <Field label="Date">
+            <input
+              type="date"
+              required
+              value={manualDate}
+              onChange={(e) => setManualDate(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Holiday name (optional)">
+            <input
+              type="text"
+              placeholder="e.g. Hari Merdeka"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              className={`${inputCls} w-48`}
+            />
+          </Field>
+          <button
+            type="submit"
+            className="px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors self-end"
+          >
+            + Add
+          </button>
+        </form>
+
+        {manualList.length > 0 && (
+          <div className="border border-gray-100 rounded-lg overflow-hidden mb-3">
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-xs font-medium text-gray-600">
+                {manualList.length} date{manualList.length !== 1 ? "s" : ""} queued
+                {manualCountry && <span className="ml-1 text-gray-400">· {manualCountry}</span>}
+              </span>
+              <div className="flex items-center gap-2">
+                {blockManualMutation.isSuccess && (
+                  <span className="text-xs text-green-600 font-medium">
+                    ✓ Blocked for {blockManualMutation.data.staffCount} staff
+                  </span>
+                )}
+                <button
+                  onClick={() => blockManualMutation.mutate({
+                    dates: manualList.map((h) => ({
+                      ...h,
+                      name: [manualCountry, h.name].filter(Boolean).join(": ") || undefined,
+                    })),
+                  })}
+                  disabled={blockManualMutation.isPending}
+                  className="px-3 py-1 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 rounded-md transition-colors"
+                >
+                  {blockManualMutation.isPending
+                    ? "Blocking…"
+                    : `Block all ${manualList.length} days for all staff`}
+                </button>
+              </div>
+            </div>
+            <div className="divide-y divide-gray-50 max-h-48 overflow-y-auto">
+              {manualList.map((h) => (
+                <div key={h.date} className="flex items-center justify-between px-4 py-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono text-gray-500 w-24 shrink-0">{h.date}</span>
+                    <span className="text-sm text-gray-800">{h.name || <span className="text-gray-400 italic">No name</span>}</span>
+                  </div>
+                  <button
+                    onClick={() => removeManualEntry(h.date)}
+                    className="text-gray-400 hover:text-red-500 transition-colors text-xs px-1"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {blockManualMutation.isError && (
+          <p className="text-sm text-red-600 mt-1">{blockManualMutation.error.message}</p>
+        )}
+      </div>
+
+      <p className="text-xs text-gray-400 mt-4">
         Holidays are imported as date overrides — existing custom overrides on the same date are preserved.
-        Powered by{" "}
+        Automatic import powered by{" "}
         <a href="https://date.nager.at" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-600">
           Nager.Date
         </a>{" "}
@@ -794,18 +871,16 @@ export default function AvailabilityPage() {
         <div className="space-y-6">
           <WeeklySchedule staffId={staffId} />
           <DateOverrides staffId={staffId} />
-          <HolidayCalendar />
           <SlotPreview staffId={staffId} tenantSlug={tenantSlug} />
         </div>
       ) : (
-        <div className="space-y-6">
-          <div className="bg-white border border-dashed border-gray-300 rounded-xl px-6 py-12 text-center">
-            <p className="text-gray-400 text-sm">Select a staff member above to manage their availability.</p>
-          </div>
-          {/* Holiday calendar is tenant-wide — show it even without a staff selection */}
-          <HolidayCalendar />
+        <div className="bg-white border border-dashed border-gray-300 rounded-xl px-6 py-12 text-center">
+          <p className="text-gray-400 text-sm">Select a staff member above to manage their availability.</p>
         </div>
       )}
+
+      {/* Holiday calendar is tenant-wide — always visible regardless of staff selection */}
+      <HolidayCalendar />
     </div>
   );
 }

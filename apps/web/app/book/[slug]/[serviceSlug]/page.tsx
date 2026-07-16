@@ -225,7 +225,7 @@ export default function BookingFlowPage({
   async function handleBooking(e: React.FormEvent) {
     e.preventDefault();
     if (!service || !selectedStaff || !selectedSlot || !holdToken) return;
-    const booking = await bookMutation.mutateAsync({
+    const result = await bookMutation.mutateAsync({
       tenantSlug: slug,
       serviceId: service.id,
       staffId: selectedStaff.id,
@@ -238,7 +238,11 @@ export default function BookingFlowPage({
       customerNotes: form.notes || undefined,
       channel: "web",
     });
-    setConfirmedId(booking.id);
+    if (result.checkoutUrl) {
+      window.location.href = result.checkoutUrl;
+      return;
+    }
+    setConfirmedId(result.id);
     setStep("confirmed");
   }
 
@@ -458,7 +462,11 @@ export default function BookingFlowPage({
                 disabled={bookMutation.isPending}
                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-medium rounded-xl transition-colors"
               >
-                {bookMutation.isPending ? "Confirming…" : "Confirm booking"}
+                {bookMutation.isPending
+                  ? "Processing…"
+                  : service.requiresPayment && service.price
+                  ? `Pay ${service.currency} ${service.price} & confirm`
+                  : "Confirm booking"}
               </button>
               {bookMutation.isError && (
                 <p className="text-sm text-red-600 text-center">{bookMutation.error.message}</p>

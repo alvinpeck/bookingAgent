@@ -18,6 +18,7 @@ import {
 } from "@booking-agent/db";
 import { encrypt, decrypt } from "../lib/crypto";
 import { sendInviteEmail } from "../lib/email";
+import { stripe } from "../lib/stripe";
 
 // Keys that can be stored per-tenant — extend this list as new services are added
 export const API_KEY_SERVICES = [
@@ -527,6 +528,95 @@ export const tenantRouter = router({
       model:              map["agent:model"]         ?? "",
     };
   }),
+
+  // ─── Stripe Connect ────────────────────────────────────────────────────────
+
+  /** Return the tenant's Stripe Connect account status. */
+  getConnectStatus: protectedProcedure.query(async ({ ctx }) => {
+    const tenant = await ctx.db.query.tenants.findFirst({
+      where: eq(tenants.id, ctx.tenant!.id),
+      columns: {
+        stripeConnectAccountId: true,
+        stripeConnectOnboardingComplete: true,
+      },
+    });
+
+    if (!tenant?.stripeConnectAccountId) {
+      return { connected: false, onboardingComplete: false, chargesEnabled: false, payoutsEnabled: false, accountId: null };
+    }
+
+    try {
+      const account = await stripe.accounts.retrieve(tenant.stripeConnectAccountId);
+      return {
+        connected: true,
+        onboardingComplete: account.details_submitted ?? false,
+        chargesEnabled: account.charges_enabled ?? false,
+        payoutsEnabled: account.payouts_enabled ?? false,
+        accountId: account.id,
+      };
+    } catch {
+      // Account may have been deleted on Stripe side
+      return { connected: false, onboardingComplete: false, chargesEnabled: false, payoutsEnabled: false, accountId: null };
+    }
+  }),
+
+  /** Create (or resume) a Stripe Connect Express onboarding link. */
+  createConnectOnboardingLink: protectedProcedure
+    .use(withAudit)
+    .mutation(async ({ ctx }) => {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+      const returnUrl  = `${appUrl}/settings?tab=payments&connect=success`;
+      const refreshUrl = `${appUrl}/settings?tab=payments&connect=refresh`;
+
+      let accountId = ctx.tenant!.stripeConnectAccountId as string | null;
+
+      if (!accountId) {
+        const account = await stripe.accounts.create({
+          type: "express",
+          metadata: { tenantId: ctx.tenant!.id },
+        });
+        accountId = account.id;
+        await ctx.db
+          .update(tenants)
+          .set({ stripeConnectAccountId: accountId, updatedAt: new Date() } as any)
+          .where(eq(tenants.id, ctx.tenant!.id));
+      }
+
+      const link = await stripe.accountLinks.create({
+        account: accountId,
+        refresh_url: refreshUrl,
+        return_url:  returnUrl,
+        type: "account_onboarding",
+      });
+
+      await ctx.audit("tenant.stripe_connect_started", {
+        resourceType: "tenant",
+        resourceId:   ctx.tenant!.id,
+      });
+
+      return { url: link.url };
+    }),
+
+  /** Unlink the tenant's Stripe Connect account (does not delete the Stripe account). */
+  disconnectStripeConnect: protectedProcedure
+    .use(withAudit)
+    .mutation(async ({ ctx }) => {
+      await ctx.db
+        .update(tenants)
+        .set({
+          stripeConnectAccountId: null,
+          stripeConnectOnboardingComplete: false,
+          updatedAt: new Date(),
+        } as any)
+        .where(eq(tenants.id, ctx.tenant!.id));
+
+      await ctx.audit("tenant.stripe_connect_disconnected", {
+        resourceType: "tenant",
+        resourceId:   ctx.tenant!.id,
+      });
+
+      return { success: true };
+    }),
 
   /** Upsert agent customization settings for the current tenant. */
   saveAgentSettings: protectedProcedure

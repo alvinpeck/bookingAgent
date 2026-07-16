@@ -54,10 +54,16 @@ export const tenants = pgTable(
     logoUrl: text("logo_url"),
     websiteUrl: text("website_url"),
 
-    // Billing
+    // Platform billing (subscription)
     stripeCustomerId: text("stripe_customer_id"),
     stripeSubscriptionId: text("stripe_subscription_id"),
     currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+
+    // Stripe Connect — tenant's own account for collecting booking payments
+    stripeConnectAccountId: text("stripe_connect_account_id"),
+    stripeConnectOnboardingComplete: boolean("stripe_connect_onboarding_complete")
+      .notNull()
+      .default(false),
 
     // Soft-delete support
     deletedAt: timestamp("deleted_at", { withTimezone: true }),

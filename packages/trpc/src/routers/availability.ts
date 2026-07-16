@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, gte, lte, lt, gt } from "drizzle-orm";
+import { eq, and, gte, lte, lt, gt, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import {
   router,
@@ -550,6 +550,19 @@ export const availabilityRouter = router({
     }),
 
   /**
+   * Return the list of countries supported by Nager.Date so the UI only shows
+   * countries that will actually resolve without a 404.
+   */
+  listAvailableCountries: protectedProcedure.query(async () => {
+    const resp = await fetch("https://date.nager.at/api/v3/AvailableCountries");
+    if (!resp.ok) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not fetch country list from Nager.Date." });
+    }
+    const data = await resp.json() as Array<{ countryCode: string; name: string }>;
+    return data.map((c) => ({ code: c.countryCode, name: c.name }));
+  }),
+
+  /**
    * Preview public holidays for a given country and year without writing to the DB.
    * Fetches from the free Nager.Date API (no auth required, CORS-friendly).
    */
@@ -564,28 +577,55 @@ export const availabilityRouter = router({
       const resp = await fetch(
         `https://date.nager.at/api/v3/PublicHolidays/${input.year}/${input.countryCode}`
       );
-      if (!resp.ok) {
+
+      // Nager.at returns 404 for unsupported countries and sometimes 200 with an
+      // empty body for years whose data hasn't been published yet. Handle both.
+      const text = await resp.text();
+      if (!resp.ok || !text.trim()) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `Could not load holidays for ${input.countryCode}/${input.year}. The country code may not be supported.`,
+          message: resp.status === 404
+            ? `Country code "${input.countryCode}" is not supported by Nager.Date.`
+            : `Holiday data for ${input.countryCode} ${input.year} is not yet available.`,
         });
       }
-      const data = (await resp.json()) as Array<{
-        date: string;
-        localName: string;
-        name: string;
-        types: string[];
-      }>;
-      return data.map((h) => ({
-        date: h.date,
-        name: h.localName || h.name,
-        englishName: h.name,
-      }));
+
+      let data: Array<{ date: string; localName: string; name: string; types: string[] }>;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Holiday data for ${input.countryCode} ${input.year} is not yet available.`,
+        });
+      }
+
+      if (!Array.isArray(data) || data.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `No holidays found for ${input.countryCode} ${input.year}. The year may not be published yet.`,
+        });
+      }
+
+      // Nager.at can return multiple entries per date (national + regional variants).
+      // Deduplicate by date, keeping the first (national-level) entry.
+      const seen = new Set<string>();
+      return data
+        .filter((h) => {
+          if (seen.has(h.date)) return false;
+          seen.add(h.date);
+          return true;
+        })
+        .map((h) => ({
+          date: h.date,
+          name: h.localName || h.name,
+          englishName: h.name,
+        }));
     }),
 
   /**
    * Import public holidays as blocked overrides for ALL active staff in the tenant.
-   * Uses onConflictDoNothing so existing custom overrides are never overwritten.
+   * Uses onConflictDoUpdate so existing overrides on the same date are always forced blocked.
    */
   importHolidays: protectedProcedure
     .use(withAudit)
@@ -600,17 +640,32 @@ export const availabilityRouter = router({
       const resp = await fetch(
         `https://date.nager.at/api/v3/PublicHolidays/${input.year}/${input.countryCode}`
       );
-      if (!resp.ok) {
+      const text = await resp.text();
+      if (!resp.ok || !text.trim()) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `Could not load holidays for ${input.countryCode}/${input.year}.`,
+          message: resp.status === 404
+            ? `Country code "${input.countryCode}" is not supported.`
+            : `Holiday data for ${input.countryCode} ${input.year} is not yet available.`,
         });
       }
-      const holidays = (await resp.json()) as Array<{
-        date: string;
-        localName: string;
-        name: string;
-      }>;
+      let raw: Array<{ date: string; localName: string; name: string }>;
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Holiday data for ${input.countryCode} ${input.year} is not yet available.`,
+        });
+      }
+      if (!Array.isArray(raw)) raw = [];
+      // Deduplicate by date (Nager.at may return national + regional variants for the same date)
+      const seen = new Set<string>();
+      const holidays = raw.filter((h) => {
+        if (seen.has(h.date)) return false;
+        seen.add(h.date);
+        return true;
+      });
 
       if (!holidays.length) return { imported: 0, staffCount: 0, holidaysCount: 0 };
 
@@ -638,11 +693,20 @@ export const availabilityRouter = router({
         }))
       );
 
-      // Insert — skip conflicts so custom overrides on the same date are preserved
+      // Insert — when a holiday conflicts with an existing override, force it blocked.
+      // A custom override on a public holiday should still result in the day being blocked.
       await ctx.db
         .insert(availabilityOverrides)
         .values(values as any)
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [availabilityOverrides.staffId, availabilityOverrides.overrideDate],
+          set: {
+            isBlocked:  true,
+            startTime:  null,
+            endTime:    null,
+            reason:     sql`excluded.reason`,
+          },
+        });
 
       await ctx.audit("availability.updated", {
         resourceType: "availability_override",
@@ -660,5 +724,69 @@ export const availabilityRouter = router({
         staffCount:    allStaff.length,
         holidaysCount: holidays.length,
       };
+    }),
+
+  /**
+   * Block a manually provided list of dates for ALL active staff in the tenant.
+   * Used when a country isn't covered by Nager.Date.
+   */
+  blockDatesForAllStaff: protectedProcedure
+    .use(withAudit)
+    .input(
+      z.object({
+        dates: z
+          .array(
+            z.object({
+              date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+              name: z.string().max(120).optional(),
+            })
+          )
+          .min(1)
+          .max(366),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const allStaff = await ctx.db.query.staff.findMany({
+        where: and(
+          eq(staffTable.tenantId, ctx.tenant!.id),
+          eq(staffTable.isActive, true)
+        ),
+        columns: { id: true },
+      });
+
+      if (!allStaff.length) return { imported: 0, staffCount: 0 };
+
+      const values = allStaff.flatMap((s) =>
+        input.dates.map((d) => ({
+          tenantId:     ctx.tenant!.id,
+          staffId:      s.id,
+          overrideDate: d.date,
+          isBlocked:    true as const,
+          startTime:    null as string | null,
+          endTime:      null as string | null,
+          reason:       d.name ? `Public Holiday: ${d.name}` : "Public Holiday",
+        }))
+      );
+
+      await ctx.db
+        .insert(availabilityOverrides)
+        .values(values as any)
+        .onConflictDoUpdate({
+          target: [availabilityOverrides.staffId, availabilityOverrides.overrideDate],
+          set: {
+            isBlocked: true,
+            startTime: null,
+            endTime:   null,
+            reason:    sql`excluded.reason`,
+          },
+        });
+
+      await ctx.audit("availability.updated", {
+        resourceType: "availability_override",
+        resourceId:   ctx.tenant!.id,
+        after: { datesCount: input.dates.length, staffCount: allStaff.length },
+      });
+
+      return { imported: values.length, staffCount: allStaff.length };
     }),
 });

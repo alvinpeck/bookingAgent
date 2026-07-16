@@ -22,6 +22,7 @@ const serviceInputSchema = z.object({
   bufferAfterMinutes: z.number().int().min(0).max(120).default(0),
   price: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
   currency: z.string().length(3).default("USD"),
+  requiresPayment: z.boolean().default(false),
   isPublic: z.boolean().default(true),
   maxConcurrentBookings: z.number().int().min(1).max(100).default(1),
   colorHex: z
@@ -120,6 +121,7 @@ export const servicesRouter = router({
           price: true,
           currency: true,
           colorHex: true,
+          requiresPayment: true,
         },
       });
 

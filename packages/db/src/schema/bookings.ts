@@ -27,6 +27,13 @@ export const bookingStatusEnum = pgEnum("booking_status", [
   "rescheduled", // replaced by a new booking (linked via rescheduledToId)
 ]);
 
+export const bookingPaymentStatusEnum = pgEnum("booking_payment_status", [
+  "unpaid",    // payment required but not yet collected
+  "paid",      // payment collected via Stripe Checkout
+  "refunded",  // payment was refunded
+  "waived",    // payment requirement waived by staff
+]);
+
 export const bookingChannelEnum = pgEnum("booking_channel", [
   "web",        // public booking site
   "whatsapp",
@@ -94,6 +101,10 @@ export const bookings = pgTable(
     // Hold token that was consumed to create this booking
     holdToken: text("hold_token"),
 
+    // Payment (Stripe Connect)
+    paymentStatus: bookingPaymentStatusEnum("payment_status"),
+    stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+
     // Reminders
     reminderSentAt: timestamp("reminder_sent_at", { withTimezone: true }),
     reminderScheduledFor: timestamp("reminder_scheduled_for", { withTimezone: true }),
@@ -160,3 +171,4 @@ export const bookingStatusHistory = pgTable(
 
 export type BookingStatus = typeof bookingStatusEnum.enumValues[number];
 export type BookingChannel = typeof bookingChannelEnum.enumValues[number];
+export type BookingPaymentStatus = typeof bookingPaymentStatusEnum.enumValues[number];

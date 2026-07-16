@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 
-type Tab = "general" | "team" | "compliance";
+type Tab = "general" | "team" | "compliance" | "payments";
 
 const inputCls =
   "w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent";
@@ -552,15 +553,137 @@ function ComplianceSection() {
   );
 }
 
+// ─── Payments section ─────────────────────────────────────────────────────────
+
+function PaymentsSection() {
+  const utils = trpc.useUtils();
+  const { data: status, isLoading } = trpc.tenant.getConnectStatus.useQuery();
+
+  const onboardMutation = trpc.tenant.createConnectOnboardingLink.useMutation({
+    onSuccess: ({ url }) => { window.location.href = url; },
+  });
+  const disconnectMutation = trpc.tenant.disconnectStripeConnect.useMutation({
+    onSuccess: () => utils.tenant.getConnectStatus.invalidate(),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-6 animate-pulse">
+        <div className="h-4 w-40 bg-gray-100 rounded mb-3" />
+        <div className="h-4 w-64 bg-gray-100 rounded" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-800">Stripe Connect</h2>
+            <p className="text-xs text-gray-500 mt-0.5 max-w-md">
+              Connect your Stripe account so customers can pay at the time of booking.
+              Payments go directly to you — your platform subscription covers the service fee.
+            </p>
+          </div>
+
+          {status?.connected ? (
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+              status.chargesEnabled
+                ? "bg-green-100 text-green-700"
+                : "bg-yellow-100 text-yellow-700"
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${status.chargesEnabled ? "bg-green-500" : "bg-yellow-500"}`} />
+              {status.chargesEnabled ? "Active" : "Pending verification"}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="mt-5">
+          {!status?.connected ? (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => onboardMutation.mutate()}
+                disabled={onboardMutation.isPending}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {onboardMutation.isPending ? "Redirecting…" : "Connect Stripe account"}
+              </button>
+              {onboardMutation.isError && (
+                <span className="text-sm text-red-600">{onboardMutation.error.message}</span>
+              )}
+            </div>
+          ) : !status.onboardingComplete ? (
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
+                Your Stripe setup is incomplete. Finish it to start accepting payments.
+              </p>
+              <button
+                onClick={() => onboardMutation.mutate()}
+                disabled={onboardMutation.isPending}
+                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-300 text-white text-sm font-medium rounded-lg transition-colors shrink-0"
+              >
+                {onboardMutation.isPending ? "Redirecting…" : "Complete setup"}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3 max-w-xs text-sm">
+                <span className="text-gray-500">Account ID</span>
+                <span className="font-mono text-gray-700 text-xs">{status.accountId}</span>
+                <span className="text-gray-500">Charges</span>
+                <span className={status.chargesEnabled ? "text-green-600 font-medium" : "text-yellow-600"}>
+                  {status.chargesEnabled ? "Enabled" : "Pending"}
+                </span>
+                <span className="text-gray-500">Payouts</span>
+                <span className={status.payoutsEnabled ? "text-green-600 font-medium" : "text-yellow-600"}>
+                  {status.payoutsEnabled ? "Enabled" : "Pending"}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  if (!confirm("Disconnect Stripe? Customers will no longer be able to pay at booking.")) return;
+                  disconnectMutation.mutate();
+                }}
+                disabled={disconnectMutation.isPending}
+                className="mt-2 px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
+              >
+                {disconnectMutation.isPending ? "Disconnecting…" : "Disconnect Stripe"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="text-sm font-semibold text-gray-800 mb-1">Enabling payments per service</h2>
+        <p className="text-xs text-gray-500">
+          Once connected, go to <strong>Services</strong> and toggle &ldquo;Require payment at booking&rdquo; on any
+          service. Customers will be sent to Stripe Checkout before their booking is confirmed.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState<Tab>("general");
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() =>
+    searchParams.get("tab") === "payments" ? "payments" : "general"
+  );
+
+  // Auto-open payments tab when Stripe redirects back
+  useEffect(() => {
+    if (searchParams.get("tab") === "payments") setTab("payments");
+  }, [searchParams]);
 
   const TABS: { id: Tab; label: string }[] = [
     { id: "general",    label: "General" },
     { id: "team",       label: "Team" },
     { id: "compliance", label: "Compliance" },
+    { id: "payments",   label: "Payments" },
   ];
 
   return (
@@ -600,6 +723,7 @@ export default function SettingsPage() {
       {tab === "general"    && <GeneralSection />}
       {tab === "team"       && <TeamSection />}
       {tab === "compliance" && <ComplianceSection />}
+      {tab === "payments"   && <PaymentsSection />}
     </div>
   );
 }

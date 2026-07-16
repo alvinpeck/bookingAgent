@@ -52,6 +52,9 @@ export const services = pgTable(
     price: numeric("price", { precision: 10, scale: 2 }),
     currency: text("currency").notNull().default("USD"),
 
+    // Whether customers must pay via Stripe Checkout before booking is confirmed
+    requiresPayment: boolean("requires_payment").notNull().default(false),
+
     // Whether this service is shown on the public booking site
     isPublic: boolean("is_public").notNull().default(true),
 

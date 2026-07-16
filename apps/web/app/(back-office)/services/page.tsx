@@ -18,7 +18,7 @@ function slugify(s: string) {
 
 const blankForm = {
   name: "", slug: "", description: "", durationMinutes: 60, bufferAfterMinutes: 0,
-  price: "", currency: "USD", isPublic: true, colorHex: "#6366f1",
+  price: "", currency: "USD", requiresPayment: false, isPublic: true, colorHex: "#6366f1",
 };
 
 type ServiceRow = {
@@ -30,6 +30,7 @@ type ServiceRow = {
   bufferAfterMinutes: number;
   price: string | null;
   currency: string;
+  requiresPayment: boolean;
   isPublic: boolean;
   colorHex: string | null;
   status: string;
@@ -43,6 +44,7 @@ type EditForm = {
   bufferAfterMinutes: number;
   price: string;
   currency: string;
+  requiresPayment: boolean;
   isPublic: boolean;
   colorHex: string;
 };
@@ -51,6 +53,7 @@ export default function ServicesPage() {
   const utils = trpc.useUtils();
   const { data: services, isLoading } = trpc.services.list.useQuery();
   const { data: tenant } = trpc.tenant.getCurrent.useQuery();
+  const { data: connectStatus } = trpc.tenant.getConnectStatus.useQuery();
 
   const createMutation = trpc.services.create.useMutation({
     onSuccess: () => { utils.services.list.invalidate(); setShowForm(false); setForm(blankForm); },
@@ -84,6 +87,7 @@ export default function ServicesPage() {
       bufferAfterMinutes: s.bufferAfterMinutes,
       price: s.price ?? "",
       currency: s.currency,
+      requiresPayment: s.requiresPayment,
       isPublic: s.isPublic,
       colorHex: s.colorHex ?? "#6366f1",
     });
@@ -99,6 +103,7 @@ export default function ServicesPage() {
       bufferAfterMinutes: form.bufferAfterMinutes,
       price: form.price || undefined,
       currency: form.currency,
+      requiresPayment: form.requiresPayment,
       isPublic: form.isPublic,
       colorHex: form.colorHex,
     });
@@ -117,6 +122,7 @@ export default function ServicesPage() {
         bufferAfterMinutes: editForm.bufferAfterMinutes,
         price: editForm.price || undefined,
         currency: editForm.currency,
+        requiresPayment: editForm.requiresPayment,
         isPublic: editForm.isPublic,
         colorHex: editForm.colorHex,
       },
@@ -163,6 +169,7 @@ export default function ServicesPage() {
           error={createMutation.isError ? createMutation.error.message : null}
           submitLabel="Create service"
           title="New service"
+          stripeConnected={connectStatus?.chargesEnabled ?? false}
         />
       )}
 
@@ -194,10 +201,15 @@ export default function ServicesPage() {
                         <span className="px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500">Private</span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {s.durationMinutes}min
-                      {s.bufferAfterMinutes > 0 ? ` + ${s.bufferAfterMinutes}min buffer` : ""}
-                      {s.price ? ` · ${s.currency} ${s.price}` : " · Free"}
+                    <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span>{s.durationMinutes}min{s.bufferAfterMinutes > 0 ? ` + ${s.bufferAfterMinutes}min buffer` : ""}</span>
+                      <span>·</span>
+                      <span>{s.price ? `${s.currency} ${s.price}` : "Free"}</span>
+                      {s.requiresPayment && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-100 text-indigo-700">
+                          Payment required
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -263,6 +275,7 @@ export default function ServicesPage() {
                     error={updateMutation.isError ? updateMutation.error.message : null}
                     submitLabel="Save changes"
                     title={`Editing: ${s.name}`}
+                    stripeConnected={connectStatus?.chargesEnabled ?? false}
                   />
                 </div>
               )}
@@ -351,6 +364,7 @@ function ServiceForm({
   error,
   submitLabel,
   title,
+  stripeConnected,
 }: {
   form: EditForm;
   setForm: React.Dispatch<React.SetStateAction<EditForm>>;
@@ -360,6 +374,7 @@ function ServiceForm({
   error: string | null;
   submitLabel: string;
   title: string;
+  stripeConnected: boolean;
 }) {
   return (
     <form onSubmit={onSubmit} className="bg-white rounded-xl border border-indigo-200 p-6 mb-3 space-y-4">
@@ -448,6 +463,33 @@ function ServiceForm({
           className="accent-indigo-600"
         />
         <label htmlFor={`isPublic-${title}`} className="text-sm text-gray-700">Show on public booking site</label>
+      </div>
+
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox" id={`requiresPayment-${title}`}
+          checked={form.requiresPayment}
+          disabled={!stripeConnected}
+          onChange={(e) => setForm((f) => ({ ...f, requiresPayment: e.target.checked }))}
+          className="accent-indigo-600 mt-0.5"
+        />
+        <div>
+          <label
+            htmlFor={`requiresPayment-${title}`}
+            className={`text-sm ${stripeConnected ? "text-gray-700" : "text-gray-400"}`}
+          >
+            Require payment at booking
+          </label>
+          {!stripeConnected && (
+            <p className="text-xs text-amber-600 mt-0.5">
+              Connect Stripe first in{" "}
+              <a href="/settings?tab=payments" className="underline hover:text-amber-800">Settings → Payments</a>
+            </p>
+          )}
+          {form.requiresPayment && !form.price && (
+            <p className="text-xs text-red-500 mt-0.5">Set a price above to enable payment.</p>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3 pt-2">

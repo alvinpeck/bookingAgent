@@ -12,7 +12,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { db, tenants } from "@booking-agent/db";
+import { db, tenants, bookings, bookingStatusHistory } from "@booking-agent/db";
 import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -197,6 +197,76 @@ export async function POST(req: NextRequest) {
             .update(tenants)
             .set({ status: "active", updatedAt: new Date() } as any)
             .where(eq(tenants.stripeCustomerId, customerId));
+        }
+        break;
+      }
+
+      case "checkout.session.completed": {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const bookingId = session.metadata?.bookingId;
+        if (!bookingId) break;
+
+        const existing = await db.query.bookings.findFirst({
+          where: eq(bookings.id, bookingId),
+          columns: { id: true, tenantId: true, status: true },
+        });
+        if (!existing || existing.status !== "pending") break;
+
+        await db
+          .update(bookings)
+          .set({ status: "confirmed", paymentStatus: "paid", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, bookingId));
+
+        await db.insert(bookingStatusHistory).values({
+          tenantId: existing.tenantId,
+          bookingId,
+          fromStatus: "pending",
+          toStatus: "confirmed",
+          changedBy: "stripe_checkout",
+          metadata: { checkoutSessionId: session.id } as any,
+        } as any);
+
+        console.log(`[stripe/webhook] booking ${bookingId} confirmed after payment`);
+        break;
+      }
+
+      case "checkout.session.expired": {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const bookingId = session.metadata?.bookingId;
+        if (!bookingId) break;
+
+        const existing = await db.query.bookings.findFirst({
+          where: eq(bookings.id, bookingId),
+          columns: { id: true, tenantId: true, status: true },
+        });
+        if (!existing || existing.status !== "pending") break;
+
+        await db
+          .update(bookings)
+          .set({ status: "cancelled", updatedAt: new Date() } as any)
+          .where(eq(bookings.id, bookingId));
+
+        await db.insert(bookingStatusHistory).values({
+          tenantId: existing.tenantId,
+          bookingId,
+          fromStatus: "pending",
+          toStatus: "cancelled",
+          changedBy: "stripe_checkout_expired",
+        } as any);
+
+        console.log(`[stripe/webhook] booking ${bookingId} cancelled — checkout expired`);
+        break;
+      }
+
+      case "account.updated": {
+        // Stripe Connect — sync onboarding completion for a connected tenant account
+        const account = event.data.object as Stripe.Account;
+        if (account.details_submitted) {
+          await db
+            .update(tenants)
+            .set({ stripeConnectOnboardingComplete: true, updatedAt: new Date() } as any)
+            .where(eq((tenants as any).stripeConnectAccountId, account.id));
+          console.log(`[stripe/webhook] connect account onboarding complete: ${account.id}`);
         }
         break;
       }
