@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: qa
-      url: ${{ secrets.QA_APP_URL }}
+      url: ${{ vars.QA_APP_URL }}
     steps:
       - uses: actions/checkout@v4
 
