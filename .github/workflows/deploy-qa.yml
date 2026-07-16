@@ -81,4 +81,4 @@ jobs:
             --env NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="${{ secrets.QA_STRIPE_PUBLISHABLE_KEY }}"
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_QA }}
