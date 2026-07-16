@@ -32,3 +32,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS "bookings_checkout_session_idx"
 -- 6. requires_payment flag on services
 ALTER TABLE "services"
   ADD COLUMN IF NOT EXISTS "requires_payment" boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
+
+-- 7. New audit_action enum values for Stripe Connect
+ALTER TYPE "public"."audit_action" ADD VALUE IF NOT EXISTS 'tenant.stripe_connect_started';
+ALTER TYPE "public"."audit_action" ADD VALUE IF NOT EXISTS 'tenant.stripe_connect_disconnected';

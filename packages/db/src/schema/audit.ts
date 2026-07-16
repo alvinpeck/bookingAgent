@@ -56,6 +56,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant.settings_updated",
   "tenant.plan_changed",
   "tenant.suspended",
+  "tenant.stripe_connect_started",
+  "tenant.stripe_connect_disconnected",
 ]);
 
 // ─── Audit Logs ───────────────────────────────────────────────────────────────

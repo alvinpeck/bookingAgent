@@ -705,7 +705,7 @@ export const availabilityRouter = router({
             startTime:  null,
             endTime:    null,
             reason:     sql`excluded.reason`,
-          },
+          } as any,
         });
 
       await ctx.audit("availability.updated", {
@@ -778,7 +778,7 @@ export const availabilityRouter = router({
             startTime: null,
             endTime:   null,
             reason:    sql`excluded.reason`,
-          },
+          } as any,
         });
 
       await ctx.audit("availability.updated", {
